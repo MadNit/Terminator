@@ -7,7 +7,14 @@ export type SshAuth =
 
 export type TransportSpec =
   | { kind: "local"; shell: string | null; cwd: string | null }
-  | { kind: "ssh"; host: string; port: number; user: string; auth: SshAuth }
+  | {
+      kind: "ssh";
+      host: string;
+      port: number;
+      user: string;
+      auth: SshAuth;
+      jump_host?: TransportSpec | null;
+    }
   | {
       kind: "rdp";
       host: string;
@@ -53,6 +60,8 @@ export async function openSession(
   onEvent: (e: SessionEvent) => void,
   secretRef?: string,
   password?: string,
+  jumpSecretRef?: string,
+  jumpPassword?: string,
 ): Promise<string> {
   const channel = new Channel<SessionEvent>();
   channel.onmessage = onEvent;
@@ -62,6 +71,8 @@ export async function openSession(
     rows,
     secretRef: secretRef ?? null,
     password: password ?? null,
+    jumpSecretRef: jumpSecretRef ?? null,
+    jumpPassword: jumpPassword ?? null,
     channel,
   });
 }

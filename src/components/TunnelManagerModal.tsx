@@ -196,7 +196,7 @@ export function TunnelManagerModal({
                 }
 
                 const sshDesc = t.ssh_spec.kind === "ssh"
-                  ? `${t.ssh_spec.user}@${t.ssh_spec.host}:${t.ssh_spec.port}`
+                  ? `${t.ssh_spec.user}@${t.ssh_spec.host}:${t.ssh_spec.port}${t.ssh_spec.jump_host ? " (via jump)" : ""}`
                   : "SSH Server";
 
                 return (

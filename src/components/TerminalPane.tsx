@@ -22,6 +22,9 @@ interface Props {
   secretRef?: string;
   /** One-shot password, used when the user chose not to save it. */
   password?: string;
+  /** Jump host credential refs */
+  jumpSecretRef?: string;
+  jumpPassword?: string;
   active: boolean;
   /** Function called when data is typed in this pane; useful for broadcast input */
   onInputData?: (data: string) => void;
@@ -37,6 +40,8 @@ export function TerminalPane({
   spec,
   secretRef,
   password,
+  jumpSecretRef,
+  jumpPassword,
   active,
   onInputData,
   onReady,
@@ -163,8 +168,9 @@ export function TerminalPane({
 
     // Remote transports can take a moment; say so rather than sitting blank.
     if (spec.kind !== "local") {
+      const via = spec.kind === "ssh" && spec.jump_host ? ` (via jump host)` : "";
       term.write(
-        `\x1b[90mconnecting to ${spec.host}:${spec.port} ...\x1b[0m\r\n`,
+        `\x1b[90mconnecting to ${spec.host}:${spec.port}${via} ...\x1b[0m\r\n`,
       );
     }
 
@@ -186,6 +192,8 @@ export function TerminalPane({
       },
       secretRef,
       password,
+      jumpSecretRef,
+      jumpPassword,
     )
       .then((id) => {
         idRef.current = id;

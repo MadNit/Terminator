@@ -46,6 +46,9 @@ pub enum TransportSpec {
         user: String,
         #[serde(default)]
         auth: SshAuth,
+        /// Optional intermediate jump host / bastion for ProxyJump (ssh -J).
+        #[serde(default)]
+        jump_host: Option<Box<TransportSpec>>,
     },
     Rdp {
         host: String,

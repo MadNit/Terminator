@@ -72,6 +72,9 @@ async fn open_session(
     // One-shot password for "don't remember" connections. Takes precedence
     // over secret_ref and is never written to the keychain or vault.
     password: Option<String>,
+    // Jump host credential refs / passwords if ProxyJump is configured
+    jump_secret_ref: Option<String>,
+    jump_password: Option<String>,
     channel: Channel<SessionEvent>,
 ) -> Result<String, String> {
     let out_ch = channel.clone();
@@ -86,22 +89,30 @@ async fn open_session(
 
     tracing::info!("open_session: {:?} {cols}x{rows}", spec);
 
-    // Resolve the credential just in time. It lives only for this call and is
-    // never written into the profile row.
-    let creds = match (&spec, password, secret_ref) {
+    // Resolve credentials just in time.
+    let mut creds = match (&spec, password, secret_ref) {
         (TransportSpec::Ssh { .. }, Some(pw), _) => Credentials {
             secret: Some(pw),
             key_passphrase: None,
+            jump_secret: None,
+            jump_key_passphrase: None,
         },
-        // Propagate the error instead of swallowing it: a locked vault would
-        // otherwise look exactly like "no password saved", and the connection
-        // would fail later with a confusing auth error.
         (TransportSpec::Ssh { .. }, None, Some(r)) => Credentials {
             secret: blocking_secrets(&state.secrets, move |s| s.get(&r)).await?,
             key_passphrase: None,
+            jump_secret: None,
+            jump_key_passphrase: None,
         },
         _ => Credentials::default(),
     };
+
+    if let TransportSpec::Ssh { jump_host: Some(_), .. } = &spec {
+        if let Some(pw) = jump_password {
+            creds.jump_secret = Some(pw);
+        } else if let Some(r) = jump_secret_ref {
+            creds.jump_secret = blocking_secrets(&state.secrets, move |s| s.get(&r)).await?;
+        }
+    }
 
     let id = state
         .sessions
@@ -465,12 +476,16 @@ async fn start_tunnel(
         (TransportSpec::Ssh { .. }, Some(pw), _) => terminator_core::transport::ssh::SshCredentials {
             secret: Some(pw),
             key_passphrase: None,
+            jump_secret: None,
+            jump_key_passphrase: None,
         },
         (TransportSpec::Ssh { .. }, None, Some(key)) => {
             let secret = blocking_secrets(&state.secrets, move |s| s.get(&key)).await?;
             terminator_core::transport::ssh::SshCredentials {
                 secret,
                 key_passphrase: None,
+                jump_secret: None,
+                jump_key_passphrase: None,
             }
         }
         _ => terminator_core::transport::ssh::SshCredentials::default(),

@@ -48,6 +48,7 @@ fn spec(e: &Env) -> TransportSpec {
         auth: SshAuth::Key {
             path: e.key.clone(),
         },
+        jump_host: None,
     }
 }
 
@@ -212,6 +213,7 @@ async fn ssh_agent_auth_works() {
         port: e.port,
         user: e.user.clone(),
         auth: SshAuth::Agent,
+        jump_host: None,
     };
 
     let id = mgr

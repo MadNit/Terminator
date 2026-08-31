@@ -123,27 +123,31 @@ pub struct SshTransport {
 pub struct SshCredentials {
     pub secret: Option<String>,
     pub key_passphrase: Option<String>,
+    /// Optional credentials for jump host / bastion
+    pub jump_secret: Option<String>,
+    pub jump_key_passphrase: Option<String>,
 }
 
 impl SshTransport {
     pub fn session_handle(&self) -> Arc<Handle<Client>> {
         self.session.clone()
     }
-    pub async fn connect(
+
+    /// Establishes an authenticated SSH session handle (either direct or via ProxyJump / jump host).
+    pub async fn establish_session(
         spec: &TransportSpec,
-        cols: u16,
-        rows: u16,
-        creds: SshCredentials,
-        known_hosts_path: PathBuf,
-    ) -> Result<Self> {
-        let (host, port, user, auth) = match spec {
+        creds: &SshCredentials,
+        known_hosts_path: &PathBuf,
+    ) -> Result<Handle<Client>> {
+        let (host, port, user, auth, jump_host) = match spec {
             TransportSpec::Ssh {
                 host,
                 port,
                 user,
                 auth,
-            } => (host.clone(), *port, user.clone(), auth.clone()),
-            _ => bail!("SshTransport only handles TransportSpec::Ssh"),
+                jump_host,
+            } => (host.clone(), *port, user.clone(), auth.clone(), jump_host.clone()),
+            _ => bail!("establish_session only handles TransportSpec::Ssh"),
         };
 
         if let Some(parent) = known_hosts_path.parent() {
@@ -151,8 +155,6 @@ impl SshTransport {
         }
 
         let config = Arc::new(client::Config {
-            // Without keepalives, NAT/firewall idle timeouts silently kill
-            // long-lived sessions -- the classic "my SSH froze" complaint.
             keepalive_interval: Some(Duration::from_secs(30)),
             keepalive_max: 3,
             ..Default::default()
@@ -162,12 +164,56 @@ impl SshTransport {
             host: host.clone(),
             port,
             policy: HostKeyPolicy::TofuAccept,
-            known_hosts: known_hosts_path,
+            known_hosts: known_hosts_path.clone(),
         };
 
-        // An unreachable host would otherwise sit in the OS TCP backoff for
-        // ~75s with the UI stuck on "connecting", and a server that completes
-        // the TCP handshake but never sends a banner hangs indefinitely.
+        if let Some(jump_spec) = jump_host {
+            tracing::info!("Connecting via jump host: {:?}", jump_spec.label());
+            let jump_creds = SshCredentials {
+                secret: creds.jump_secret.clone(),
+                key_passphrase: creds.jump_key_passphrase.clone(),
+                jump_secret: None,
+                jump_key_passphrase: None,
+            };
+            // Establish session to the bastion / jump box first
+            let jump_session = Box::pin(Self::establish_session(&jump_spec, &jump_creds, known_hosts_path)).await?;
+            // Open direct-tcpip channel through the bastion to the target destination
+            let channel = jump_session
+                .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 22)
+                .await
+                .with_context(|| format!("jump host refused tunnel to target {host}:{port}"))?;
+            let stream = channel.into_stream();
+
+            let mut session = tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                client::connect_stream(config, stream, handler),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "timed out after {}s connecting to {host}:{port} via jump host",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
+            .with_context(|| format!("failed to connect to {host}:{port} via jump host"))?;
+
+            tokio::time::timeout(
+                AUTH_TIMEOUT,
+                authenticate(&mut session, &user, &auth, creds),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "timed out after {}s authenticating as {user}@{host}",
+                    AUTH_TIMEOUT.as_secs()
+                )
+            })?
+            .with_context(|| format!("authentication failed for {user}@{host}"))?;
+
+            return Ok(session);
+        }
+
+        // Direct connection without jump host
         let mut session = tokio::time::timeout(
             CONNECT_TIMEOUT,
             client::connect(config, (host.as_str(), port), handler),
@@ -181,10 +227,9 @@ impl SshTransport {
         })?
         .with_context(|| format!("failed to connect to {host}:{port}"))?;
 
-        // Keyboard-interactive servers can stall here just as easily.
         tokio::time::timeout(
             AUTH_TIMEOUT,
-            authenticate(&mut session, &user, &auth, &creds),
+            authenticate(&mut session, &user, &auth, creds),
         )
         .await
         .map_err(|_| {
@@ -195,6 +240,17 @@ impl SshTransport {
         })?
         .with_context(|| format!("authentication failed for {user}@{host}"))?;
 
+        Ok(session)
+    }
+
+    pub async fn connect(
+        spec: &TransportSpec,
+        cols: u16,
+        rows: u16,
+        creds: SshCredentials,
+        known_hosts_path: PathBuf,
+    ) -> Result<Self> {
+        let session = Self::establish_session(spec, &creds, &known_hosts_path).await?;
         let session = Arc::new(session);
         let channel = session.channel_open_session().await?;
         channel

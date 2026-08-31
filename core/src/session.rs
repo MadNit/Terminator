@@ -30,6 +30,8 @@ pub type ExitSink = Arc<dyn Fn() + Send + Sync>;
 pub struct Credentials {
     pub secret: Option<String>,
     pub key_passphrase: Option<String>,
+    pub jump_secret: Option<String>,
+    pub jump_key_passphrase: Option<String>,
 }
 
 /// Output is coalesced over this window before reaching the UI. Without it a
@@ -138,6 +140,8 @@ impl SessionManager {
                         crate::transport::ssh::SshCredentials {
                             secret: creds.secret,
                             key_passphrase: creds.key_passphrase,
+                            jump_secret: creds.jump_secret,
+                            jump_key_passphrase: creds.jump_key_passphrase,
                         },
                         known_hosts,
                     )

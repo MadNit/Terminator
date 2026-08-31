@@ -39,6 +39,8 @@ interface Tab {
   secretRef?: string;
   /** Held in memory only, for "don't remember" connections. */
   password?: string;
+  jumpSecretRef?: string;
+  jumpPassword?: string;
   /** Links a tab back to the saved profile that opened it, so the sidebar can
    *  show live state and offer Disconnect. Absent for ad-hoc local shells. */
   profileId?: string;
@@ -181,6 +183,8 @@ export default function App() {
     secretRef?: string,
     password?: string,
     profileId?: string,
+    jumpSecretRef?: string,
+    jumpPassword?: string,
   ) => {
     const key = nextKey++;
     setTabs((t) => [
@@ -191,6 +195,8 @@ export default function App() {
         spec,
         secretRef,
         password,
+        jumpSecretRef,
+        jumpPassword,
         profileId,
         sessionId: null,
         exited: false,
@@ -302,7 +308,13 @@ export default function App() {
         profileId = await saveProfile(c.name, null, c.spec);
         await refreshProfiles();
       }
-      openTab(c.name, c.spec, secretRef, undefined, profileId);
+      let jumpSecretRef: string | undefined;
+      if (c.spec.kind === "ssh" && c.spec.jump_host) {
+        if (c.spec.jump_host.kind === "ssh" && c.spec.jump_host.auth.method === "password") {
+          jumpSecretRef = secretKeyFor(c.spec.jump_host);
+        }
+      }
+      openTab(c.name, c.spec, secretRef, undefined, profileId, jumpSecretRef);
       setStatus(`opening ${c.name}`);
     } catch (err) {
       setStatus(String(err));
@@ -331,8 +343,16 @@ export default function App() {
     const needsPassword =
       (p.spec.kind === "ssh" && p.spec.auth.method === "password") ||
       p.spec.kind === "rdp";
+
+    let jumpSecretRef: string | undefined;
+    if (p.spec.kind === "ssh" && p.spec.jump_host) {
+      if (p.spec.jump_host.kind === "ssh" && p.spec.jump_host.auth.method === "password") {
+        jumpSecretRef = secretKeyFor(p.spec.jump_host);
+      }
+    }
+
     if (!needsPassword) {
-      openTab(p.name, p.spec, undefined, undefined, p.id);
+      openTab(p.name, p.spec, undefined, undefined, p.id, jumpSecretRef);
       return;
     }
 
@@ -341,7 +361,7 @@ export default function App() {
     // fail deep in the SSH handshake with an error the user cannot act on.
     try {
       if (await hasSecret(ref)) {
-        openTab(p.name, p.spec, ref, undefined, p.id);
+        openTab(p.name, p.spec, ref, undefined, p.id, jumpSecretRef);
       } else {
         setPwPrompt(p);
       }
@@ -355,13 +375,20 @@ export default function App() {
     if (!p) return;
     setPwPrompt(null);
     try {
+      let jumpSecretRef: string | undefined;
+      if (p.spec.kind === "ssh" && p.spec.jump_host) {
+        if (p.spec.jump_host.kind === "ssh" && p.spec.jump_host.auth.method === "password") {
+          jumpSecretRef = secretKeyFor(p.spec.jump_host);
+        }
+      }
+
       if (remember) {
         const ref = secretKeyFor(p.spec);
         await setSecret(ref, password);
-        openTab(p.name, p.spec, ref, undefined, p.id);
+        openTab(p.name, p.spec, ref, undefined, p.id, jumpSecretRef);
       } else {
         // Hand the password straight to the session so it never reaches disk.
-        openTab(p.name, p.spec, undefined, password, p.id);
+        openTab(p.name, p.spec, undefined, password, p.id, jumpSecretRef);
       }
     } catch (err) {
       setStatus(String(err));
@@ -537,6 +564,8 @@ export default function App() {
                         spec={t.spec}
                         secretRef={t.secretRef}
                         password={t.password}
+                        jumpSecretRef={t.jumpSecretRef}
+                        jumpPassword={t.jumpPassword}
                         active={t.key === active}
                         onInputData={(data) => handleBroadcastInput(t.key, data)}
                         onReady={(id) =>
@@ -632,6 +661,8 @@ export default function App() {
                                 spec={t.spec}
                                 secretRef={t.secretRef}
                                 password={t.password}
+                                jumpSecretRef={t.jumpSecretRef}
+                                jumpPassword={t.jumpPassword}
                                 active={(focusedPaneKey ?? active) === t.key}
                                 onInputData={(data) => handleBroadcastInput(t.key, data)}
                                 onReady={(id) =>

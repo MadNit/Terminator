@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PasswordField } from "./PasswordField";
-import { secretsBackend } from "../lib/api";
+import { secretsBackend, listProfiles } from "../lib/api";
 import type { Profile, SshAuth, TransportSpec } from "../lib/api";
 
 export type NewConnection = {
@@ -59,11 +59,25 @@ export function ConnectDialog({
   const [domain, setDomain] = useState(
     (e?.kind === "rdp" && e.domain) || "",
   );
+  // Jump host (ProxyJump / Bastion)
+  const [jumpHostId, setJumpHostId] = useState<string>(() => {
+    if (e?.kind === "ssh" && e.jump_host && e.jump_host.kind === "ssh") {
+      return `${e.jump_host.user}@${e.jump_host.host}:${e.jump_host.port}`;
+    }
+    return "";
+  });
+  const [availableJumpProfiles, setAvailableJumpProfiles] = useState<Profile[]>([]);
   // The hint must name the store actually in use; claiming "OS keychain" while
   // running on the encrypted-file fallback is simply wrong.
   const [secretHint, setSecretHint] = useState(
     "Stored in the system credential store, never in the profile.",
   );
+
+  useEffect(() => {
+    void listProfiles().then((list) => {
+      setAvailableJumpProfiles(list.filter((p) => p.spec.kind === "ssh" && (!edit || p.id !== edit.id)));
+    }).catch(() => {});
+  }, [edit]);
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
@@ -117,7 +131,25 @@ export function ConnectDialog({
         method === "key"
           ? { method: "key", path: keyPath.trim() }
           : { method };
-      spec = { kind: "ssh", host: host.trim(), port, user: user.trim(), auth };
+      let jumpSpec: TransportSpec | null = null;
+      if (jumpHostId) {
+        const found = availableJumpProfiles.find(
+          (p) =>
+            p.spec.kind === "ssh" &&
+            `${p.spec.user}@${p.spec.host}:${p.spec.port}` === jumpHostId,
+        );
+        if (found) {
+          jumpSpec = found.spec;
+        }
+      }
+      spec = {
+        kind: "ssh",
+        host: host.trim(),
+        port,
+        user: user.trim(),
+        auth,
+        jump_host: jumpSpec,
+      };
     } else {
       spec = {
         kind: "rdp",
@@ -247,6 +279,38 @@ export function ConnectDialog({
                 </span>
               </label>
             )}
+
+            <label>
+              Jump Host / ProxyJump <span className="dim">(Bastion - optional)</span>
+              <select
+                value={jumpHostId}
+                onChange={(ev) => setJumpHostId(ev.target.value)}
+                style={{
+                  width: "100%",
+                  marginTop: "4px",
+                  padding: "7px 9px",
+                  background: "var(--ink-700)",
+                  border: "1px solid var(--ink-600)",
+                  borderRadius: "var(--radius)",
+                  color: "var(--fg)",
+                  font: "inherit",
+                  fontSize: "12.5px",
+                }}
+              >
+                <option value="">Direct Connection (No Jump Host)</option>
+                {availableJumpProfiles.map((p) => {
+                  const val = `${p.spec.kind === "ssh" ? p.spec.user : "" }@${p.spec.kind === "ssh" ? p.spec.host : ""}:${p.spec.kind === "ssh" ? p.spec.port : ""}`;
+                  return (
+                    <option key={p.id} value={val}>
+                      {p.name} ({val})
+                    </option>
+                  );
+                })}
+              </select>
+              <span className="hint">
+                Route SSH connection through an intermediate jump server (ssh -J).
+              </span>
+            </label>
           </>
         )}
 

@@ -48,6 +48,7 @@ fn spec(e: &Env) -> TransportSpec {
         auth: SshAuth::Key {
             path: e.key.clone(),
         },
+        jump_host: None,
     }
 }
 

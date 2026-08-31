@@ -58,6 +58,11 @@ export function ProfileView({
       { k: "User", v: spec.user, copy: true },
       { k: "Auth", v: describeAuth(spec) },
     );
+    if (spec.kind === "ssh" && spec.jump_host) {
+      const j = spec.jump_host;
+      const jDesc = j.kind === "ssh" ? `${j.user}@${j.host}:${j.port}` : "SSH Jump Host";
+      rows.push({ k: "Jump Host", v: jDesc, copy: true });
+    }
   }
 
   return (
