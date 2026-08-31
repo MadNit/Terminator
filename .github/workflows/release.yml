@@ -107,6 +107,6 @@ jobs:
 
             **Windows users:** SmartScreen may warn on first run. Choose
             "More info" then "Run anyway".
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

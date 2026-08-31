@@ -337,25 +337,32 @@ async fn authenticate(
                 .await?
         }
         SshAuth::Agent => {
-            let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-                .await
-                .context("no ssh-agent available (is SSH_AUTH_SOCK set?)")?;
-            let identities = agent.request_identities().await?;
-            if identities.is_empty() {
-                bail!("ssh-agent has no identities loaded (try `ssh-add`)");
-            }
-            let mut last = None;
-            for id in identities {
-                let key = id.public_key().into_owned();
-                let r = session
-                    .authenticate_publickey_with(user, key, None, &mut agent)
-                    .await?;
-                if matches!(r, AuthResult::Success) {
-                    return Ok(());
+            #[cfg(unix)]
+            {
+                let mut agent = russh::keys::agent::client::AgentClient::connect_env()
+                    .await
+                    .context("no ssh-agent available (is SSH_AUTH_SOCK set?)")?;
+                let identities = agent.request_identities().await?;
+                if identities.is_empty() {
+                    bail!("ssh-agent has no identities loaded (try `ssh-add`)");
                 }
-                last = Some(r);
+                let mut last = None;
+                for id in identities {
+                    let key = id.public_key().into_owned();
+                    let r = session
+                        .authenticate_publickey_with(user, key, None, &mut agent)
+                        .await?;
+                    if matches!(r, AuthResult::Success) {
+                        return Ok(());
+                    }
+                    last = Some(r);
+                }
+                last.ok_or_else(|| anyhow!("no agent identity was accepted"))?
             }
-            last.ok_or_else(|| anyhow!("no agent identity was accepted"))?
+            #[cfg(not(unix))]
+            {
+                bail!("ssh-agent authentication is only supported on Unix platforms");
+            }
         }
     };
 
