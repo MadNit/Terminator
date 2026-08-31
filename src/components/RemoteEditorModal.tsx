@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import Editor, { loader, type OnMount } from "@monaco-editor/react";
+import Editor, { DiffEditor, loader, type OnMount } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
+import { MiniTerminalDrawer } from "./MiniTerminalDrawer";
 import {
   readRemoteTextFile,
   writeRemoteTextFile,
@@ -20,6 +21,7 @@ import {
   type FileSearchResult,
   type SearchMatch,
   type SearchOptions,
+  type TransportSpec,
 } from "../lib/api";
 import "../editor.css";
 
@@ -55,6 +57,11 @@ interface Props {
   sessionId?: string | null;
   hostLabel?: string | null;
   isLocal?: boolean;
+  spec?: TransportSpec;
+  secretRef?: string;
+  password?: string;
+  jumpSecretRef?: string;
+  jumpPassword?: string;
   onClose: () => void;
 }
 
@@ -293,6 +300,11 @@ export function RemoteEditorModal({
   sessionId,
   hostLabel,
   isLocal,
+  spec,
+  secretRef,
+  password,
+  jumpSecretRef,
+  jumpPassword,
   onClose,
 }: Props) {
   const [tabs, setTabs] = useState<EditorTabItem[]>([]);
@@ -304,6 +316,13 @@ export function RemoteEditorModal({
   const [fontSize, setFontSize] = useState<number>(13);
   const [fullscreen, setFullscreen] = useState<boolean>(false);
   const [pathInput, setPathInput] = useState<string>("");
+
+  // Terminal Drawer State
+  const [terminalDrawerOpen, setTerminalDrawerOpen] = useState<boolean>(false);
+
+  // Diff Viewer State
+  const [diffMode, setDiffMode] = useState<boolean>(false);
+  const [diffSideBySide, setDiffSideBySide] = useState<boolean>(true);
 
   // Sidebar View Tab: "explorer" | "search"
   const [sidebarTab, setSidebarTab] = useState<"explorer" | "search">("explorer");
@@ -798,7 +817,7 @@ export function RemoteEditorModal({
     setCollapsedFiles((prev) => ({ ...prev, [filePath]: !prev[filePath] }));
   };
 
-  // Global keyboard shortcuts (Cmd/Ctrl+Shift+F for Search, Cmd/Ctrl+Shift+E for Explorer)
+  // Global keyboard shortcuts
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (!open) return;
@@ -810,6 +829,12 @@ export function RemoteEditorModal({
         e.preventDefault();
         setSidebarOpen(true);
         setSidebarTab("explorer");
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "`" || e.key === "~")) {
+        e.preventDefault();
+        setTerminalDrawerOpen((v) => !v);
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "D" || e.key === "d")) {
+        e.preventDefault();
+        setDiffMode((v) => !v);
       }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
@@ -933,6 +958,23 @@ export function RemoteEditorModal({
               title="Reload content from server"
             >
               ⟳ Reload
+            </button>
+
+            <button
+              className={`editor-btn icon-only ${diffMode ? "active" : ""}`}
+              onClick={() => setDiffMode((d) => !d)}
+              disabled={!activeTab || activeTab.loading}
+              title="Toggle Side-by-Side Diff Comparison with Saved Version (Ctrl+Shift+D)"
+            >
+              ⚖️ Diff
+            </button>
+
+            <button
+              className={`editor-btn icon-only ${terminalDrawerOpen ? "active" : ""}`}
+              onClick={() => setTerminalDrawerOpen((t) => !t)}
+              title="Toggle Integrated Terminal Drawer (Ctrl+`)"
+            >
+              💻 Terminal
             </button>
 
             <button
@@ -1507,7 +1549,75 @@ export function RemoteEditorModal({
                       </button>
                     </div>
                   )}
-                  {!activeTab.error && (
+                  {!activeTab.error && diffMode && (
+                    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+                      <div className="editor-diff-toolbar">
+                        <div className="editor-diff-toolbar-left">
+                          <span className="editor-diff-chip">Original (Saved Disk)</span>
+                          <span>↔</span>
+                          <span className="editor-diff-chip" style={{ color: "var(--lime)" }}>
+                            Modified (Buffer)
+                          </span>
+                        </div>
+                        <div className="editor-diff-toolbar-right">
+                          <button
+                            className="editor-sidebar-action-btn"
+                            onClick={() => setDiffSideBySide((v) => !v)}
+                            title="Toggle Side-by-Side vs Inline Diff"
+                          >
+                            {diffSideBySide ? "⬍ Inline Diff" : "⬌ Side-by-Side"}
+                          </button>
+                          {activeTab.isDirty && (
+                            <button
+                              className="editor-sidebar-action-btn"
+                              style={{ color: "var(--danger)" }}
+                              onClick={() => {
+                                if (window.confirm("Revert all unsaved changes to original saved file?")) {
+                                  setTabs((prev) =>
+                                    prev.map((t) =>
+                                      t.id === activeTab.id
+                                        ? { ...t, content: t.savedContent, isDirty: false }
+                                        : t,
+                                    ),
+                                  );
+                                }
+                              }}
+                              title="Discard unsaved changes"
+                            >
+                              ↩ Revert
+                            </button>
+                          )}
+                          <button
+                            className="editor-sidebar-action-btn"
+                            onClick={() => setDiffMode(false)}
+                            title="Return to Editor"
+                          >
+                            ✕ Close Diff
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ flex: 1, minHeight: 0 }}>
+                        <DiffEditor
+                          height="100%"
+                          original={activeTab.savedContent}
+                          modified={activeTab.content}
+                          language={activeTab.language}
+                          theme="terminator-dark"
+                          options={{
+                            fontFamily:
+                              '"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace',
+                            fontSize,
+                            renderSideBySide: diffSideBySide,
+                            readOnly: false,
+                            originalEditable: false,
+                            scrollBeyondLastLine: false,
+                            smoothScrolling: true,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {!activeTab.error && !diffMode && (
                     <Editor
                       height="100%"
                       language={activeTab.language}
@@ -1556,6 +1666,18 @@ export function RemoteEditorModal({
                 </div>
               )}
             </div>
+
+            {/* Integrated Terminal Bottom Drawer */}
+            <MiniTerminalDrawer
+              open={terminalDrawerOpen}
+              spec={spec}
+              secretRef={secretRef}
+              password={password}
+              jumpSecretRef={jumpSecretRef}
+              jumpPassword={jumpPassword}
+              hostLabel={hostLabel}
+              onClose={() => setTerminalDrawerOpen(false)}
+            />
 
             {/* Status Bar */}
             <footer className="editor-statusbar">

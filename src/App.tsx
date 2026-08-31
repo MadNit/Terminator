@@ -11,6 +11,8 @@ import { SessionHistoryModal } from "./components/SessionHistoryModal";
 import { TunnelManagerModal } from "./components/TunnelManagerModal";
 import { SnippetManagerModal } from "./components/SnippetManagerModal";
 import { KnownHostsModal } from "./components/KnownHostsModal";
+import { TriggerManagerModal } from "./components/TriggerManagerModal";
+import { BackupModal } from "./components/BackupModal";
 import { CommandPalette } from "./components/CommandPalette";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
@@ -109,6 +111,8 @@ export default function App() {
   const [tunnelsOpen, setTunnelsOpen] = useState(false);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [knownHostsOpen, setKnownHostsOpen] = useState(false);
+  const [triggersOpen, setTriggersOpen] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorInitialFile, setEditorInitialFile] = useState<OpenFileTarget | null>(null);
@@ -520,6 +524,8 @@ export default function App() {
         onOpenTunnels={() => setTunnelsOpen(true)}
         onOpenSnippets={() => setSnippetsOpen(true)}
         onOpenKnownHosts={() => setKnownHostsOpen(true)}
+        onOpenTriggers={() => setTriggersOpen(true)}
+        onOpenBackup={() => setBackupOpen(true)}
         onOpenEditor={() => setEditorOpen(true)}
         splitLayout={splitLayout}
         onSplitLayout={setSplitLayout}
@@ -551,6 +557,8 @@ export default function App() {
           onOpenTunnels={() => setTunnelsOpen(true)}
           onOpenSnippets={() => setSnippetsOpen(true)}
           onOpenKnownHosts={() => setKnownHostsOpen(true)}
+          onOpenTriggers={() => setTriggersOpen(true)}
+          onOpenBackup={() => setBackupOpen(true)}
           onOpenEditor={() => setEditorOpen(true)}
           busy={busy}
         />
@@ -877,6 +885,20 @@ export default function App() {
         <KnownHostsModal open={knownHostsOpen} onClose={() => setKnownHostsOpen(false)} />
       )}
 
+      {triggersOpen && (
+        <TriggerManagerModal open={triggersOpen} onClose={() => setTriggersOpen(false)} />
+      )}
+
+      {backupOpen && (
+        <BackupModal
+          open={backupOpen}
+          onClose={() => setBackupOpen(false)}
+          onRestoreComplete={() => {
+            void listProfiles().then(setProfiles);
+          }}
+        />
+      )}
+
       <RemoteEditorModal
         open={editorOpen}
         initialFile={editorInitialFile}
@@ -887,6 +909,11 @@ export default function App() {
             : null
         }
         isLocal={activeTab?.spec.kind === "local" || !activeTab}
+        spec={activeTab?.spec ?? { kind: "local", shell: null, cwd: null }}
+        secretRef={activeTab?.secretRef}
+        password={activeTab?.password}
+        jumpSecretRef={activeTab?.jumpSecretRef}
+        jumpPassword={activeTab?.jumpPassword}
         onClose={() => {
           setEditorOpen(false);
           setEditorInitialFile(null);
@@ -944,6 +971,20 @@ export default function App() {
               subtitle: "Configure Local (-L), Remote (-R), and Dynamic SOCKS5 (-D) tunnels",
               icon: "⚡",
               perform: () => setTunnelsOpen(true),
+            },
+            {
+              id: "open-triggers",
+              title: "Terminal Output Triggers & Desktop Alerts",
+              subtitle: "Configure regex watchers, audio chimes, and notifications for terminal output",
+              icon: "🔔",
+              perform: () => setTriggersOpen(true),
+            },
+            {
+              id: "open-backup",
+              title: "Backup & Restore (Import / Export JSON)",
+              subtitle: "Export or import connection profiles, SSH tunnels, snippets, and triggers",
+              icon: "📦",
+              perform: () => setBackupOpen(true),
             },
             {
               id: "open-recordings",

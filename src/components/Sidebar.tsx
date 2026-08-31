@@ -83,6 +83,8 @@ export function Sidebar({
   onOpenSnippets,
   onOpenKnownHosts,
   onOpenEditor,
+  onOpenTriggers,
+  onOpenBackup,
   busy,
 }: {
   profiles: Profile[];
@@ -99,6 +101,8 @@ export function Sidebar({
   onOpenSnippets?: () => void;
   onOpenKnownHosts?: () => void;
   onOpenEditor?: () => void;
+  onOpenTriggers?: () => void;
+  onOpenBackup?: () => void;
   busy: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<Set<Kind>>(new Set());
@@ -257,6 +261,26 @@ export function Sidebar({
           >
             <span style={{ fontSize: "13px" }}>⚡</span>
             <span>Snippets Library</span>
+          </button>
+        )}
+        {onOpenTriggers && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenTriggers}
+            title="Terminal Output Triggers & Desktop Alerts"
+          >
+            <span style={{ fontSize: "13px" }}>🔔</span>
+            <span>Triggers & Alerts</span>
+          </button>
+        )}
+        {onOpenBackup && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenBackup}
+            title="Import / Export Profiles, Snippets, Tunnels Backup (JSON)"
+          >
+            <span style={{ fontSize: "13px" }}>📦</span>
+            <span>Backup & Restore</span>
           </button>
         )}
         {onOpenKnownHosts && (

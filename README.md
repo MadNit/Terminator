@@ -82,6 +82,11 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 
 ### Remote File Editor & In-App Mini-IDE (⌘E / Ctrl+E)
 - **VS Code-Powered In-App Editor**: Bundled offline **Monaco Editor** with rich syntax highlighting, bracket pair colorization, indentation guides, code folding, search & replace, and code formatting (`Shift+Alt+F`).
+- **Sidebar Project Explorer & Global File Search**:
+  - **Tree File Explorer**: Browse, create, rename, and delete remote and local files and directories directly within the IDE sidebar.
+  - **Global Fast Regex Search**: Search across entire folder trees for text and regex patterns with match count badges, filename grouping, context snippets, and single-click jump to file line.
+- **Side-by-side & Inline Monaco Diff Viewer (⇧⌘D / Ctrl+Shift+D)**: Compare dirty working buffers against original disk content with visual split/inline diffing, added/removed line highlighting, and one-click revert.
+- **Integrated Bottom Mini-Terminal Drawer (⌃` / Ctrl+`)**: Resizable live terminal drawer embedded directly inside the IDE to execute build commands, git workflows, and test runners while editing code.
 - **Comprehensive Language Support**: Automatic syntax detection and styling for popular languages including:
   - Python (`.py`, `.pyw`)
   - C / C++ (`.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`)
@@ -94,6 +99,15 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Direct Streaming SFTP Remote Save (⌘S / Ctrl+S)**: Save changes directly back to remote servers over SFTP byte streams with dirty-state indicator (`•`) and non-destructive overwrite guards.
 - **Multi-Tab Workspace**: Open and manage multiple remote and local files concurrently in dedicated editor tabs with instant switching.
 - **SFTP Drawer Integration**: Double-click any file in the SFTP drawer or click the "📝 Edit" toolbar button to immediately open it in the editor.
+
+### Terminal Output Triggers & Desktop Alerts (🔔)
+- **Real-Time Stream Watchers**: Monitor incoming terminal streams for custom keywords, regular expressions, errors, and task completions.
+- **Audible & Desktop Notifications**: Configure pleasant audio chimes (`Web Audio API` synth) and native OS desktop alerts for long-running builds, fatal errors, test completions, or password prompts.
+- **Custom Alert Manager**: Easily create, edit, test, and toggle pattern watchers with built-in debouncing and cooldown protection.
+
+### Configuration Backup & Restore (📦 JSON Import/Export)
+- **Portable Backups**: Export and import complete workspace configurations—including Saved Profiles, SSH Jump Hosts, Port Tunnels, Parameterized Snippets, and Output Triggers—into portable, structured JSON files.
+- **Smart Restore Modes**: Merge imported connections and snippets with existing data or perform a clean overwrite.
 
 ### Direct Terminal File Transfer & SFTP Drawer
 - **Direct Terminal Drag & Drop Upload**: Drag any file directly from Finder / File Explorer onto an active SSH terminal pane to trigger an immediate, high-speed SFTP streaming upload to the shell's **active working directory** (automatically resolved via OSC 7, OSC 133 semantic CWD markers, shell window title updates, and prompt path inspection), with live progress toast and terminal notification.
@@ -134,6 +148,8 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 |---|---|---|
 | <kbd>⌘</kbd> + <kbd>K</kbd> | <kbd>Ctrl</kbd> + <kbd>K</kbd> | Open Command Palette (search profiles, snippets, & actions) |
 | <kbd>⌘</kbd> + <kbd>E</kbd> | <kbd>Ctrl</kbd> + <kbd>E</kbd> | Open Remote File Editor & Mini-IDE Modal |
+| <kbd>⌃</kbd> + <kbd>`</kbd> | <kbd>Ctrl</kbd> + <kbd>`</kbd> | Toggle Mini-Terminal Drawer in Mini-IDE |
+| <kbd>⇧</kbd> + <kbd>⌘</kbd> + <kbd>D</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>D</kbd> | Toggle Monaco Side-by-side / Inline Diff View in Mini-IDE |
 | <kbd>⇧</kbd> + <kbd>⌘</kbd> + <kbd>P</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Open Snippets & Command Library Modal |
 | <kbd>⌘</kbd> + <kbd>B</kbd> | <kbd>Ctrl</kbd> + <kbd>B</kbd> | Toggle Connections Sidebar |
 | <kbd>⌘</kbd> + <kbd>J</kbd> | <kbd>Ctrl</kbd> + <kbd>J</kbd> | Toggle SFTP Remote File Browser Drawer |

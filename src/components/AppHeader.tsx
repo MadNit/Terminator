@@ -21,6 +21,8 @@ export function AppHeader({
   onOpenSnippets,
   onOpenKnownHosts,
   onOpenEditor,
+  onOpenTriggers,
+  onOpenBackup,
   splitLayout,
   onSplitLayout,
   broadcast,
@@ -39,6 +41,8 @@ export function AppHeader({
   onOpenSnippets?: () => void;
   onOpenKnownHosts?: () => void;
   onOpenEditor?: () => void;
+  onOpenTriggers?: () => void;
+  onOpenBackup?: () => void;
   splitLayout?: "1x1" | "1x2" | "2x1" | "2x2";
   onSplitLayout?: (layout: "1x1" | "1x2" | "2x1" | "2x2") => void;
   broadcast?: boolean;
@@ -159,6 +163,12 @@ export function AppHeader({
         </button>
         <button className="navlink" onClick={onOpenSnippets} title="Command snippets library & templates (⌘P / Quick Run)">
           ⚡ Snippets
+        </button>
+        <button className="navlink" onClick={onOpenTriggers} title="Terminal Output Triggers & Desktop Alerts">
+          🔔 Alerts
+        </button>
+        <button className="navlink" onClick={onOpenBackup} title="Import & Export Profiles, Tunnels, Snippets (JSON)">
+          📦 Backup
         </button>
         <button className="navlink" onClick={onOpenKnownHosts} title="SSH Known Hosts & Server Key Fingerprints">
           🛡️ Known Hosts

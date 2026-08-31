@@ -7,6 +7,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { readClipboard, writeClipboard } from "../lib/clipboard";
+import { loadTriggers, playChime, sendDesktopNotification } from "../lib/triggers";
 import {
   closeSession,
   decodeB64,
@@ -79,6 +80,7 @@ export function TerminalPane({
   const [dropHover, setDropHover] = useState(false);
   const homeDirRef = useRef<string | null>(null);
   const currentCwdRef = useRef<string | null>(null);
+  const lastTriggerFiredRef = useRef<Map<string, number>>(new Map());
   const [transferStatus, setTransferStatus] = useState<{
     fileName: string;
     transferred: number;
@@ -284,7 +286,49 @@ export function TerminalPane({
             cancelAutoReconnect();
             logFrontend("info", `pane first output (${spec.kind})`);
           }
-          term.write(decodeB64(ev.data));
+          const bytes = decodeB64(ev.data);
+          term.write(bytes);
+
+          // Check terminal output against active triggers
+          try {
+            const rawStr = new TextDecoder().decode(bytes);
+            const plain = rawStr.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+            const activeTriggers = loadTriggers();
+            const now = Date.now();
+            for (const trig of activeTriggers) {
+              if (!trig.enabled) continue;
+              const lastFired = lastTriggerFiredRef.current.get(trig.id) ?? 0;
+              if (now - lastFired < 3000) continue;
+
+              let matched = false;
+              if (trig.isRegex) {
+                try {
+                  const re = new RegExp(trig.pattern, "i");
+                  matched = re.test(plain);
+                } catch {
+                  // Ignore regex syntax errors
+                }
+              } else {
+                matched = plain.toLowerCase().includes(trig.pattern.toLowerCase());
+              }
+
+              if (matched) {
+                lastTriggerFiredRef.current.set(trig.id, now);
+                if (trig.action === "sound" || trig.action === "both") {
+                  playChime(trig.id.includes("error") || trig.pattern.toLowerCase().includes("error"));
+                }
+                if (trig.action === "notify" || trig.action === "both") {
+                  const snippet = plain.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100);
+                  sendDesktopNotification(
+                    `[Terminator] ${trig.name}`,
+                    snippet || `Matched output pattern: ${trig.pattern}`,
+                  );
+                }
+              }
+            }
+          } catch {
+            // Non-blocking trigger check
+          }
         } else if (ev.type === "exit") {
           finish("[session ended]");
         }

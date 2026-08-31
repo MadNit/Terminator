@@ -912,3 +912,89 @@
   padding: 0 2px;
   font-weight: 600;
 }
+
+/* Terminal Bottom Drawer in Mini-IDE */
+.editor-terminal-drawer {
+  display: flex;
+  flex-direction: column;
+  background: #0d111a;
+  border-top: 1px solid var(--ink-700);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.editor-terminal-resizer {
+  height: 4px;
+  cursor: row-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+  width: 100%;
+}
+
+.editor-terminal-resizer:hover,
+.editor-terminal-resizer.dragging {
+  background: var(--lime);
+}
+
+.editor-terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: var(--ink-850);
+  border-bottom: 1px solid var(--ink-750);
+  user-select: none;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.editor-terminal-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.editor-terminal-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editor-terminal-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px 6px;
+}
+
+/* Diff Viewer Toolbar & Container */
+.editor-diff-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: var(--ink-850);
+  border-bottom: 1px solid var(--ink-700);
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.editor-diff-toolbar-left,
+.editor-diff-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-diff-chip {
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: var(--ink-750);
+  color: var(--fg);
+  font-size: 10px;
+}
