@@ -19,6 +19,7 @@ import {
   type Listing,
   type TransferEvent,
 } from "../lib/api";
+import { getFileIcon } from "./RemoteEditorModal";
 
 /**
  * A remote file has to exist on this machine before the OS will drag it, so a
@@ -68,6 +69,7 @@ type Props = {
   remoteCapable: boolean;
   /** user@host of the active tab, shown so the drawer's target is never in doubt. */
   hostLabel: string | null;
+  onOpenFile?: (entry: FileEntry) => void;
   onClose: () => void;
 };
 
@@ -92,6 +94,7 @@ export default function FileDrawer({
   sessionId,
   remoteCapable,
   hostLabel,
+  onOpenFile,
   onClose,
 }: Props) {
   const [listing, setListing] = useState<Listing | null>(null);
@@ -461,6 +464,14 @@ export default function FileDrawer({
               >
                 Save to…
               </button>
+              <button
+                className="fbtn"
+                onClick={() => selected && selected.kind === "file" && onOpenFile?.(selected)}
+                disabled={selected?.kind !== "file"}
+                title="Open file in Mini-IDE Remote Editor"
+              >
+                📝 Edit
+              </button>
             </div>
             <div className="fpane-tools">
               <button
@@ -532,12 +543,16 @@ export default function FileDrawer({
                 onDragStart={(ev) => onDragStart(ev, entry)}
                 onClick={() => setSel(entry.path)}
                 onDoubleClick={() => {
-                  if (entry.kind === "dir") void load(sessionId, entry.path);
+                  if (entry.kind === "dir") {
+                    void load(sessionId, entry.path);
+                  } else if (entry.kind === "file") {
+                    onOpenFile?.(entry);
+                  }
                 }}
                 title={entry.path}
               >
                 <span className="fkind">
-                  {entry.kind === "dir" ? "▸" : entry.symlink ? "↗" : "·"}
+                  {entry.kind === "dir" ? "📁" : entry.symlink ? "↗" : getFileIcon(entry.name)}
                 </span>
                 <span className="fname">{entry.name}</span>
                 <span className="fsize">{formatSize(entry)}</span>

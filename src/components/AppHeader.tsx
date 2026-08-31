@@ -20,6 +20,7 @@ export function AppHeader({
   onOpenTunnels,
   onOpenSnippets,
   onOpenKnownHosts,
+  onOpenEditor,
   splitLayout,
   onSplitLayout,
   broadcast,
@@ -37,6 +38,7 @@ export function AppHeader({
   onOpenTunnels?: () => void;
   onOpenSnippets?: () => void;
   onOpenKnownHosts?: () => void;
+  onOpenEditor?: () => void;
   splitLayout?: "1x1" | "1x2" | "2x1" | "2x2";
   onSplitLayout?: (layout: "1x1" | "1x2" | "2x1" | "2x2") => void;
   broadcast?: boolean;
@@ -152,8 +154,11 @@ export function AppHeader({
       </div>
 
       <nav className="appnav">
+        <button className="navlink" onClick={onOpenEditor} title="Open in-app Mini-IDE Code Editor (⌘E)">
+          📝 Mini-IDE
+        </button>
         <button className="navlink" onClick={onOpenSnippets} title="Command snippets library & templates (⌘P / Quick Run)">
-          📝 Snippets
+          ⚡ Snippets
         </button>
         <button className="navlink" onClick={onOpenKnownHosts} title="SSH Known Hosts & Server Key Fingerprints">
           🛡️ Known Hosts

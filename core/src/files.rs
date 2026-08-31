@@ -144,6 +144,27 @@ pub fn list_local(path: &Path) -> Result<Listing> {
     })
 }
 
+/// Read local text file up to `max_bytes`.
+pub fn read_local_text(path: &Path, max_bytes: usize) -> Result<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    let mut handle = file.take(max_bytes as u64);
+    handle.read_to_end(&mut buf)?;
+    let s = String::from_utf8(buf)
+        .map_err(|_| anyhow::anyhow!("File is not valid UTF-8 text or is a binary file"))?;
+    Ok(s)
+}
+
+/// Write text directly to a local file.
+pub fn write_local_text(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
 fn mtime_secs(m: &std::fs::Metadata) -> Option<u64> {
     m.modified()
         .ok()?
@@ -184,6 +205,10 @@ pub trait RemoteFs: Send + Sync {
     async fn download(&self, remote: &str, local: &Path, progress: ProgressSink) -> Result<u64>;
     /// Local -> remote. Returns bytes written.
     async fn upload(&self, local: &Path, remote: &str, progress: ProgressSink) -> Result<u64>;
+    /// Read remote text file content up to `max_bytes`.
+    async fn read_text(&self, path: &str, max_bytes: usize) -> Result<String>;
+    /// Write text directly to remote file.
+    async fn write_text(&self, path: &str, content: &str) -> Result<()>;
 }
 
 /// Join a POSIX path, for the remote side.
@@ -321,5 +346,16 @@ mod tests {
             .find(|e| e.name == "dangling")
             .unwrap();
         assert!(dangling.symlink);
+    }
+
+    #[test]
+    fn local_text_file_read_and_write_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("code.py");
+        let content = "def hello():\n    print('Hello Terminator!')\n";
+
+        write_local_text(&file_path, content).unwrap();
+        let read_back = read_local_text(&file_path, 1024 * 1024).unwrap();
+        assert_eq!(read_back, content);
     }
 }

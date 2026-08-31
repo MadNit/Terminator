@@ -884,6 +884,49 @@ async fn upload_file(
     }
 }
 
+#[tauri::command]
+async fn read_remote_text_file(
+    state: State<'_, AppState>,
+    id: String,
+    path: String,
+) -> Result<String, String> {
+    let id = Uuid::parse_str(&id).map_err(e)?;
+    let fs = state.sessions.files(id).await.map_err(e)?;
+    fs.read_text(&path, 10 * 1024 * 1024).await.map_err(e)
+}
+
+#[tauri::command]
+async fn write_remote_text_file(
+    state: State<'_, AppState>,
+    id: String,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    let id = Uuid::parse_str(&id).map_err(e)?;
+    let fs = state.sessions.files(id).await.map_err(e)?;
+    fs.write_text(&path, &content).await.map_err(e)
+}
+
+#[tauri::command]
+async fn read_local_text_file(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        terminator_core::files::read_local_text(std::path::Path::new(&path), 10 * 1024 * 1024)
+    })
+    .await
+    .map_err(e)?
+    .map_err(e)
+}
+
+#[tauri::command]
+async fn write_local_text_file(path: String, content: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        terminator_core::files::write_local_text(std::path::Path::new(&path), &content)
+    })
+    .await
+    .map_err(e)?
+    .map_err(e)
+}
+
 /// Remote -> local.
 #[tauri::command]
 async fn download_file(
@@ -1100,6 +1143,10 @@ pub fn run() {
             remote_rename,
             upload_file,
             download_file,
+            read_remote_text_file,
+            write_remote_text_file,
+            read_local_text_file,
+            write_local_text_file,
             log_frontend,
         ])
         .run(tauri::generate_context!())

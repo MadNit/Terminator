@@ -82,6 +82,7 @@ export function Sidebar({
   onOpenTunnels,
   onOpenSnippets,
   onOpenKnownHosts,
+  onOpenEditor,
   busy,
 }: {
   profiles: Profile[];
@@ -97,6 +98,7 @@ export function Sidebar({
   onOpenTunnels?: () => void;
   onOpenSnippets?: () => void;
   onOpenKnownHosts?: () => void;
+  onOpenEditor?: () => void;
   busy: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<Set<Kind>>(new Set());
@@ -237,13 +239,23 @@ export function Sidebar({
       </div>
 
       <div className="side-foot" style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+        {onOpenEditor && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenEditor}
+            title="Open in-app Mini-IDE Code Editor (⌘E)"
+          >
+            <span style={{ fontSize: "13px" }}>📝</span>
+            <span>Remote Mini-IDE</span>
+          </button>
+        )}
         {onOpenSnippets && (
           <button
             className="side-foot-btn"
             onClick={onOpenSnippets}
             title="Open Snippets & Command Templates Library"
           >
-            <span style={{ fontSize: "13px" }}>📝</span>
+            <span style={{ fontSize: "13px" }}>⚡</span>
             <span>Snippets Library</span>
           </button>
         )}

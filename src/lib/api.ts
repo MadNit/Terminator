@@ -331,6 +331,18 @@ export const remoteRemove = (id: string, path: string, isDir: boolean) =>
 export const remoteRename = (id: string, from: string, to: string) =>
   invoke<void>("remote_rename", { id, from, to });
 
+export const readRemoteTextFile = (id: string, path: string) =>
+  invoke<string>("read_remote_text_file", { id, path });
+
+export const writeRemoteTextFile = (id: string, path: string, content: string) =>
+  invoke<void>("write_remote_text_file", { id, path, content });
+
+export const readLocalTextFile = (path: string) =>
+  invoke<string>("read_local_text_file", { path });
+
+export const writeLocalTextFile = (path: string, content: string) =>
+  invoke<void>("write_local_text_file", { path, content });
+
 export function uploadFile(
   id: string,
   local: string,

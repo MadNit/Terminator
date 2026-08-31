@@ -14,6 +14,7 @@ import { KnownHostsModal } from "./components/KnownHostsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
+import { RemoteEditorModal, type OpenFileTarget } from "./components/RemoteEditorModal";
 import { connectBlockedReason, describeTarget } from "./lib/transport";
 import {
   deleteProfile,
@@ -109,6 +110,8 @@ export default function App() {
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [knownHostsOpen, setKnownHostsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorInitialFile, setEditorInitialFile] = useState<OpenFileTarget | null>(null);
   const [filesOpen, setFilesOpen] = useState(
     () => localStorage.getItem("filesOpen") === "1",
   );
@@ -127,12 +130,16 @@ export default function App() {
     localStorage.setItem("filesOpen", filesOpen ? "1" : "0");
   }, [filesOpen]);
 
-  // Global Keyboard Shortcuts (Cmd/Ctrl+B, Cmd/Ctrl+J, Cmd/Ctrl+K, Cmd/Ctrl+P)
+  // Global Keyboard Shortcuts (Cmd/Ctrl+B, Cmd/Ctrl+J, Cmd/Ctrl+K, Cmd/Ctrl+P, Cmd/Ctrl+E)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         setPaletteOpen((v) => !v);
+      }
+      if (e.key.toLowerCase() === "e" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setEditorOpen((v) => !v);
       }
       if (e.key.toLowerCase() === "p" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
         e.preventDefault();
@@ -513,6 +520,7 @@ export default function App() {
         onOpenTunnels={() => setTunnelsOpen(true)}
         onOpenSnippets={() => setSnippetsOpen(true)}
         onOpenKnownHosts={() => setKnownHostsOpen(true)}
+        onOpenEditor={() => setEditorOpen(true)}
         splitLayout={splitLayout}
         onSplitLayout={setSplitLayout}
         broadcast={broadcast}
@@ -543,6 +551,7 @@ export default function App() {
           onOpenTunnels={() => setTunnelsOpen(true)}
           onOpenSnippets={() => setSnippetsOpen(true)}
           onOpenKnownHosts={() => setKnownHostsOpen(true)}
+          onOpenEditor={() => setEditorOpen(true)}
           busy={busy}
         />
 
@@ -781,6 +790,19 @@ export default function App() {
               ? `${activeTab.spec.user}@${activeTab.spec.host}`
               : null
           }
+          onOpenFile={(entry) => {
+            setEditorInitialFile({
+              path: entry.path,
+              name: entry.name,
+              sessionId: activeTab?.sessionId ?? null,
+              hostLabel:
+                activeTab?.spec.kind === "ssh"
+                  ? `${activeTab.spec.user}@${activeTab.spec.host}`
+                  : null,
+              isLocal: activeTab?.spec.kind === "local",
+            });
+            setEditorOpen(true);
+          }}
           onClose={() => setFilesOpen(false)}
         />
       </div>
@@ -855,12 +877,36 @@ export default function App() {
         <KnownHostsModal open={knownHostsOpen} onClose={() => setKnownHostsOpen(false)} />
       )}
 
+      <RemoteEditorModal
+        open={editorOpen}
+        initialFile={editorInitialFile}
+        sessionId={activeTab?.sessionId ?? null}
+        hostLabel={
+          activeTab?.spec.kind === "ssh"
+            ? `${activeTab.spec.user}@${activeTab.spec.host}`
+            : null
+        }
+        isLocal={activeTab?.spec.kind === "local" || !activeTab}
+        onClose={() => {
+          setEditorOpen(false);
+          setEditorInitialFile(null);
+        }}
+      />
+
       {paletteOpen && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
           onConnectProfile={(p) => void openProfile(p)}
           onRunSnippet={(cmd) => runCommandInActiveTerminal(cmd)}
           actions={[
+            {
+              id: "open-editor",
+              title: "Open Remote Mini-IDE Code Editor",
+              subtitle: "VS Code style editor with syntax highlighting, formatting, and SFTP save",
+              shortcut: "⌘E",
+              icon: "📝",
+              perform: () => setEditorOpen(true),
+            },
             {
               id: "new-session",
               title: "New Connection / Session",

@@ -20,10 +20,12 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 
 - [Features](#features)
   - [Terminal & Session Management](#terminal--session-management)
-  - [SSH Remote Access](#ssh-remote-access)
+  - [SSH Remote Access, Jump Hosts & Tunneling](#ssh-remote-access-jump-hosts--tunneling)
   - [RDP Remote Desktop](#rdp-remote-desktop)
-  - [SFTP Remote File Browser Drawer](#sftp-remote-file-browser-drawer)
-  - [Security & Credential Management](#security--credential-management)
+  - [Remote File Editor & In-App Mini-IDE](#remote-file-editor--in-app-mini-ide)
+  - [Direct Terminal File Transfer & SFTP Drawer](#direct-terminal-file-transfer--sftp-drawer)
+  - [Snippets Library & Command Palette (⌘K)](#snippets-library--command-palette-k)
+  - [Security, Known Hosts & Credential Management](#security-known-hosts--credential-management)
   - [Session Logging & asciinema Recording](#session-logging--asciinema-recording)
   - [Shell Integration (OSC 133)](#shell-integration-osc-133)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
@@ -78,6 +80,21 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Responsive Viewport & Dynamic Resize**: Viewport dynamically adapts to client window dimensions and reports resolution changes to the remote desktop server.
 - **Accurate Scancode Input**: Translates modern web keyboard and mouse events directly into native Windows scancodes and mouse motion packets.
 
+### Remote File Editor & In-App Mini-IDE (⌘E / Ctrl+E)
+- **VS Code-Powered In-App Editor**: Bundled offline **Monaco Editor** with rich syntax highlighting, bracket pair colorization, indentation guides, code folding, search & replace, and code formatting (`Shift+Alt+F`).
+- **Comprehensive Language Support**: Automatic syntax detection and styling for popular languages including:
+  - Python (`.py`, `.pyw`)
+  - C / C++ (`.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`)
+  - Java (`.java`) & Groovy (`.groovy`, `.gvy`, `.gradle`)
+  - JSON (`.json`), YAML (`.yml`, `.yaml`), TOML (`.toml`), INI (`.ini`, `.cfg`, `.conf`)
+  - Markdown (`.md`, `.markdown`) & Plain Text (`.txt`, `.log`, `.env`)
+  - Shell scripts (`.sh`, `.bash`, `.zsh`) & Dockerfile (`Dockerfile`)
+  - Rust (`.rs`), Go (`.go`), TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`)
+  - HTML, CSS, SCSS, SQL, and more.
+- **Direct Streaming SFTP Remote Save (⌘S / Ctrl+S)**: Save changes directly back to remote servers over SFTP byte streams with dirty-state indicator (`•`) and non-destructive overwrite guards.
+- **Multi-Tab Workspace**: Open and manage multiple remote and local files concurrently in dedicated editor tabs with instant switching.
+- **SFTP Drawer Integration**: Double-click any file in the SFTP drawer or click the "📝 Edit" toolbar button to immediately open it in the editor.
+
 ### Direct Terminal File Transfer & SFTP Drawer
 - **Direct Terminal Drag & Drop Upload**: Drag any file directly from Finder / File Explorer onto an active SSH terminal pane to trigger an immediate, high-speed SFTP streaming upload to the shell's **active working directory** (automatically resolved via OSC 7, OSC 133 semantic CWD markers, shell window title updates, and prompt path inspection), with live progress toast and terminal notification.
 - **Remote Host File Drawer (⌘J / Ctrl+J)**: Integrated slide-out file browser docked to the active SSH session tab.
@@ -116,9 +133,11 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 | Shortcut (macOS) | Shortcut (Windows/Linux) | Action |
 |---|---|---|
 | <kbd>⌘</kbd> + <kbd>K</kbd> | <kbd>Ctrl</kbd> + <kbd>K</kbd> | Open Command Palette (search profiles, snippets, & actions) |
+| <kbd>⌘</kbd> + <kbd>E</kbd> | <kbd>Ctrl</kbd> + <kbd>E</kbd> | Open Remote File Editor & Mini-IDE Modal |
 | <kbd>⇧</kbd> + <kbd>⌘</kbd> + <kbd>P</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Open Snippets & Command Library Modal |
 | <kbd>⌘</kbd> + <kbd>B</kbd> | <kbd>Ctrl</kbd> + <kbd>B</kbd> | Toggle Connections Sidebar |
 | <kbd>⌘</kbd> + <kbd>J</kbd> | <kbd>Ctrl</kbd> + <kbd>J</kbd> | Toggle SFTP Remote File Browser Drawer |
+| <kbd>⌘</kbd> + <kbd>S</kbd> | <kbd>Ctrl</kbd> + <kbd>S</kbd> | Save file in Mini-IDE (remotely over SFTP or locally) |
 | <kbd>⌘</kbd> + <kbd>C</kbd> | <kbd>Ctrl</kbd> + <kbd>C</kbd> | Copy selected terminal text / remote file path |
 | <kbd>⌘</kbd> + <kbd>V</kbd> | <kbd>Ctrl</kbd> + <kbd>V</kbd> | Paste text into terminal / upload copied file into SFTP drawer |
 

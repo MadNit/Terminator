@@ -182,6 +182,35 @@ impl RemoteFs for SftpFs {
         dst.shutdown().await?;
         Ok(moved)
     }
+
+    async fn read_text(&self, path: &str, max_bytes: usize) -> Result<String> {
+        let mut src = self
+            .sftp
+            .open(path.to_string())
+            .await
+            .with_context(|| format!("cannot open {path}"))?;
+
+        let mut buf = Vec::new();
+        let mut limited = (&mut src).take(max_bytes as u64);
+        limited.read_to_end(&mut buf).await?;
+
+        let s = String::from_utf8(buf)
+            .map_err(|_| anyhow::anyhow!("File is not valid UTF-8 text or is a binary file"))?;
+        Ok(s)
+    }
+
+    async fn write_text(&self, path: &str, content: &str) -> Result<()> {
+        let mut dst = self
+            .sftp
+            .create(path.to_string())
+            .await
+            .with_context(|| format!("cannot create {path}"))?;
+
+        dst.write_all(content.as_bytes()).await?;
+        dst.flush().await?;
+        dst.shutdown().await?;
+        Ok(())
+    }
 }
 
 fn kind_of(is_dir: bool, is_file: bool) -> EntryKind {
