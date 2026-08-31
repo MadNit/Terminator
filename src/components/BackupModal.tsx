@@ -17,6 +17,8 @@ export function BackupModal({ open, onClose, onRestoreComplete }: Props) {
   const [activeTab, setActiveTab] = useState<"export" | "import">("export");
   const [pasteJson, setPasteJson] = useState("");
   const [importMode, setImportMode] = useState<"merge" | "replace">("merge");
+  const [exportPassphrase, setExportPassphrase] = useState("");
+  const [importPassphrase, setImportPassphrase] = useState("");
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [backupData, setBackupData] = useState<TerminatorBackup | null>(null);
@@ -53,7 +55,7 @@ export function BackupModal({ open, onClose, onRestoreComplete }: Props) {
     if (!pasteJson.trim()) return;
     try {
       const parsed = JSON.parse(pasteJson);
-      const res = await restoreBackupData(parsed, importMode);
+      const res = await restoreBackupData(parsed, importMode, importPassphrase);
       setImportResult(res);
       if (res.success && onRestoreComplete) {
         onRestoreComplete();
@@ -164,14 +166,28 @@ export function BackupModal({ open, onClose, onRestoreComplete }: Props) {
                 </div>
               </div>
 
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <label style={{ fontSize: 12, color: "#9ca3af" }}>
+                  🔐 Optional Encryption Passphrase (AES-256-GCM)
+                </label>
+                <input
+                  type="password"
+                  placeholder="Leave empty for unencrypted JSON, or enter passphrase to encrypt"
+                  value={exportPassphrase}
+                  onChange={(e) => setExportPassphrase(e.target.value)}
+                  className="input-field"
+                  style={{ width: "100%", fontSize: 12 }}
+                />
+              </div>
+
               <div style={{ display: "flex", gap: 10 }}>
                 <button
                   type="button"
                   className="btn-primary"
                   style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px" }}
-                  onClick={() => void downloadBackupFile()}
+                  onClick={() => void downloadBackupFile(exportPassphrase)}
                 >
-                  <span>⬇</span> Download JSON Backup File
+                  <span>⬇</span> Download {exportPassphrase ? "Encrypted Backup" : "JSON Backup File"}
                 </button>
                 <button
                   type="button"
@@ -243,6 +259,20 @@ export function BackupModal({ open, onClose, onRestoreComplete }: Props) {
                     color: "#f3f4f6",
                     resize: "vertical",
                   }}
+                />
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <label style={{ fontSize: 12, color: "#9ca3af" }}>
+                  🔐 Decryption Passphrase (if file was encrypted)
+                </label>
+                <input
+                  type="password"
+                  placeholder="Enter passphrase if importing an encrypted backup"
+                  value={importPassphrase}
+                  onChange={(e) => setImportPassphrase(e.target.value)}
+                  className="input-field"
+                  style={{ width: "100%", fontSize: 12 }}
                 />
               </div>
 

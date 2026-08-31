@@ -243,6 +243,53 @@ impl SshTransport {
         Ok(session)
     }
 
+    pub async fn exec(&self, command: &str) -> Result<(i32, String, String)> {
+        Self::exec_on_session(&self.session, command).await
+    }
+
+    pub async fn exec_command(
+        spec: &TransportSpec,
+        command: &str,
+        creds: &SshCredentials,
+        known_hosts_path: &PathBuf,
+    ) -> Result<(i32, String, String)> {
+        let session = Self::establish_session(spec, creds, known_hosts_path).await?;
+        let session = Arc::new(session);
+        Self::exec_on_session(&session, command).await
+    }
+
+    pub async fn exec_on_session(
+        session: &Arc<Handle<Client>>,
+        command: &str,
+    ) -> Result<(i32, String, String)> {
+        let mut channel = session.channel_open_session().await?;
+        channel.exec(true, command).await?;
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = 0;
+
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => {
+                    stdout.extend_from_slice(&data);
+                }
+                ChannelMsg::ExtendedData { data, .. } => {
+                    stderr.extend_from_slice(&data);
+                }
+                ChannelMsg::ExitStatus { exit_status } => {
+                    exit_code = exit_status as i32;
+                }
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+
+        let stdout_str = String::from_utf8_lossy(&stdout).to_string();
+        let stderr_str = String::from_utf8_lossy(&stderr).to_string();
+        Ok((exit_code, stdout_str, stderr_str))
+    }
+
     pub async fn connect(
         spec: &TransportSpec,
         cols: u16,
@@ -395,15 +442,24 @@ async fn authenticate(
                 .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
                 .await?
         }
-        SshAuth::Agent => {
+        SshAuth::Agent | SshAuth::AgentSocket { .. } => {
             #[cfg(unix)]
             {
-                let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-                    .await
-                    .context("no ssh-agent available (is SSH_AUTH_SOCK set?)")?;
+                let mut agent = match auth {
+                    SshAuth::AgentSocket { socket_path } => {
+                        let expanded = expand_tilde(socket_path);
+                        let stream = tokio::net::UnixStream::connect(&expanded)
+                            .await
+                            .with_context(|| format!("failed to connect to SSH agent socket at {expanded}"))?;
+                        russh::keys::agent::client::AgentClient::connect(stream)
+                    }
+                    _ => russh::keys::agent::client::AgentClient::connect_env()
+                        .await
+                        .context("no ssh-agent available (is SSH_AUTH_SOCK set?)")?,
+                };
                 let identities = agent.request_identities().await?;
                 if identities.is_empty() {
-                    bail!("ssh-agent has no identities loaded (try `ssh-add`)");
+                    bail!("ssh-agent has no identities loaded (try `ssh-add` or check if your security key / 1Password agent is unlocked)");
                 }
                 let mut last = None;
                 for id in identities {
@@ -416,7 +472,7 @@ async fn authenticate(
                     }
                     last = Some(r);
                 }
-                last.ok_or_else(|| anyhow!("no agent identity was accepted"))?
+                last.ok_or_else(|| anyhow!("no agent identity was accepted by the remote server"))?
             }
             #[cfg(not(unix))]
             {

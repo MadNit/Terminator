@@ -33,6 +33,8 @@ export function describeAuth(spec: TransportSpec): string {
   switch (spec.auth.method) {
     case "agent":
       return "ssh-agent";
+    case "agent_socket":
+      return `agent socket: ${spec.auth.socket_path}`;
     case "key":
       return `key: ${spec.auth.path}`;
     default:

@@ -20,12 +20,17 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 
 - [Features](#features)
   - [Terminal & Session Management](#terminal--session-management)
+  - [Terminal Themes & Appearance Customizer](#terminal-themes--appearance-customizer)
+  - [Remote System Resource Monitor & Process Manager](#remote-system-resource-monitor--process-manager)
+  - [Multi-Host Batch Command Execution (Batch Runner)](#multi-host-batch-command-execution-batch-runner)
+  - [Remote File Editor & In-App Mini-IDE with Git Integration](#remote-file-editor--in-app-mini-ide-with-git-integration)
   - [SSH Remote Access, Jump Hosts & Tunneling](#ssh-remote-access-jump-hosts--tunneling)
+  - [Passwordless, Hardware Security Keys & SSH Agent](#passwordless-hardware-security-keys--ssh-agent)
   - [RDP Remote Desktop](#rdp-remote-desktop)
-  - [Remote File Editor & In-App Mini-IDE](#remote-file-editor--in-app-mini-ide)
   - [Direct Terminal File Transfer & SFTP Drawer](#direct-terminal-file-transfer--sftp-drawer)
   - [Snippets Library & Command Palette (⌘K)](#snippets-library--command-palette-k)
-  - [Security, Known Hosts & Credential Management](#security-known-hosts--credential-management)
+  - [Regex Triggers, Smart Highlights & Desktop Alerts](#regex-triggers-smart-highlights--desktop-alerts)
+  - [Security, Known Hosts & Encrypted Backup](#security-known-hosts--encrypted-backup)
   - [Session Logging & asciinema Recording](#session-logging--asciinema-recording)
   - [Shell Integration (OSC 133)](#shell-integration-osc-133)
 - [Keyboard Shortcuts](#keyboard-shortcuts)
@@ -64,50 +69,91 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
   - **Intelligent Exponential Backoff**: Automatically attempts reconnection on dropped sessions with countdown timer (1s, 2s, 4s, 8s, 16s), manual "Reconnect Now" override, and in-place tab restoration.
 - **Live Reconnect & Resilient Tabs**: Reconnect disconnected sessions in place without losing tab layout or credential mappings.
 
+### Terminal Themes & Appearance Customizer (🎨)
+- **10 Curated Designer Color Themes**: Default Dark, Tokyo Night, Catppuccin Mocha, Dracula, Nord, Solarized Dark, OneDark, Monokai Pro, Gruvbox Dark, and Cyberpunk Neon.
+- **Custom Typography & Sizing**: Choose from JetBrains Mono, Fira Code, Cascadia Code, SF Mono, Menlo, Consolas, or custom font stacks with live size adjustment (11px–20px) and line height controls.
+- **Interactive Terminal Cursor Styling**: Choose block (`█`), underline (`_`), or vertical bar (`|`) with optional smooth cursor blinking.
+- **Background Opacity & Acrylic Tinting**: Adjustable terminal canvas transparency (50%–100%) for stylish transparent terminal windows.
+- **Instant Live Preview**: Test theme combinations, font families, and cursor styles on a live simulated terminal canvas before saving.
+
+### Remote System Resource Monitor & Process Manager (📊)
+- **Live System Hardware Gauges**: Real-time visual progress gauges for CPU utilization, RAM usage & breakdown (used/total), Load Averages (1m, 5m, 15m), and filesystem disk space.
+- **Remote Host Specs & Uptime**: Inspect hostname, kernel architecture, OS release version, and human-readable server uptime.
+- **Interactive Process Manager**: Live sortable process table (PID, User, CPU%, MEM%, Command).
+- **Process Termination Controls**: Send `SIGTERM` (15) or force `SIGKILL` (9) signals directly to remote processes with a single click.
+- **Configurable Polling Interval**: Adjust telemetry polling rate (1s, 2s, 5s, 10s) with one-click pause and manual refresh.
+
+### Multi-Host Batch Command Execution (🚀 Batch Runner)
+- **Simultaneous Multi-Host Execution**: Run bash scripts and maintenance tasks concurrently across dozens of selected SSH servers.
+- **Built-in Automation Template Library**: Pre-loaded scripts for System Health & Uptime, Memory & Disk Summaries, Docker Container Status, Package Updates (`apt`/`yum`/`brew`), and Security Audit Logs.
+- **Real-Time Aggregated Logs**: Live ANSI stdout/stderr streaming with per-host status badges (Pending, Running, Succeeded, Failed), exit codes, and execution duration.
+- **Log Exporting**: One-click download of batch execution runs as clean timestamped text logs or structured JSON reports.
+
+### Remote File Editor & In-App Mini-IDE with Git Integration (📝 ⌘E / Ctrl+E)
+- **VS Code-Powered In-App Editor**: Bundled offline **Monaco Editor** with rich syntax highlighting, bracket pair colorization, indentation guides, code folding, search & replace, and code formatting (`Shift+Alt+F`).
+- **🌿 Git Source Control Integration**:
+  - **Sidebar Git Badge & Branch Switcher**: Real-time active Git branch badge with one-click branch checkout and status refresh.
+  - **Staged & Unstaged File Tracking**: Visual status badges for Modified (`M`), Added (`A`), Deleted (`D`), and Untracked (`?`) files.
+  - **Stage / Unstage Controls**: Stage individual files (`+`), unstage (`-`), stage all (`+ All`), or unstage all (`- All`).
+  - **Commit Box**: In-sidebar commit message input with <kbd>Ctrl</kbd>+<kbd>Enter</kbd> / <kbd>⌘</kbd>+<kbd>Enter</kbd> shortcut.
+  - **Remote Push & Pull**: Integrated `git push` and `git pull` buttons in the sidebar header.
+  - **Side-by-side Monaco Git Diff Viewer**: Compare working copy directly against `HEAD` or staged index with highlighted change blocks.
+- **Sidebar Project Explorer & Global File Search**:
+  - **Tree File Explorer**: Browse, create, rename, and delete remote and local files and directories directly within the IDE sidebar.
+  - **Global Fast Regex Search**: Search across entire folder trees for text and regex patterns with match count badges, filename grouping, context snippets, and single-click jump to file line.
+- **Side-by-side & Inline Monaco Diff Viewer (⇧⌘D / Ctrl+Shift+D)**: Compare dirty working buffers against original disk content with visual split/inline diffing, added/removed line highlighting, and one-click revert.
+- **Integrated Bottom Mini-Terminal Drawer (⌃` / Ctrl+`)**: Resizable live terminal drawer embedded directly inside the IDE to execute build commands, git workflows, and test runners while editing code.
+- **Comprehensive Language Support**: Automatic syntax detection and styling for 30+ programming languages.
+- **Direct Streaming SFTP Remote Save (⌘S / Ctrl+S)**: Save changes directly back to remote servers over SFTP byte streams with dirty-state indicator (`•`) and non-destructive overwrite guards.
+
 ### SSH Remote Access, Jump Hosts & Tunneling
 - **Full-featured SSH Client**: Built directly on asynchronous Rust (`russh` and Tokio).
 - **Jump Hosts & SSH ProxyJump (`ssh -J`)**: Connect transparently to target servers behind firewalls or private VPCs via intermediate bastion / jump hosts with end-to-end encryption.
-- **Flexible Authentication**: Supports password authentication, private keys (RSA, Ed25519, ECDSA), and native OpenSSH `ssh-agent` forwarding/querying.
+- **Flexible Authentication**: Supports password authentication, private keys (RSA, Ed25519, ECDSA), OpenSSH `ssh-agent`, and hardware security tokens.
 - **SSH Port Forwarding & Tunnels Manager**:
   - **Local Port Forwarding (`-L`)**: Forward local client ports to remote server ports through secure SSH channels.
   - **Dynamic SOCKS5 Proxy (`-D`)**: Run a local SOCKS5 proxy server routed directly through remote SSH sessions for web browsers and application proxying.
   - **Remote Port Forwarding (`-R`)**: Expose local services and web servers through remote SSH server ports.
   - **Live Monitoring & Metrics**: View active connections, live upload/download transfer rates (`bytes_tx`, `bytes_rx`), and one-click start/stop controls.
-- **Non-blocking Concurrency**: High-throughput multiplexed I/O channels for terminal interactive sessions and SFTP subsystems concurrently.
+
+### Passwordless, Hardware Security Keys & SSH Agent (🔑)
+- **FIDO2 / YubiKey Hardware Security Key Integration**: Connect seamlessly to SSH hosts using FIDO2 / U2F hardware security keys (e.g. `sk-ssh-ed25519@openssh.com`).
+- **1Password & Custom SSH Agent Sockets**: Direct support for 1Password SSH Agent (`~/.1password/agent.sock`), GPG Agent (`~/.gnupg/S.gpg-agent.ssh`), and custom agent paths.
+- **Native OpenSSH Agent & Windows Pageant**: Automatic connection to running system SSH agents for zero-passphrase authentication.
 
 ### RDP Remote Desktop
 - **Secure NLA / CredSSP**: Native Remote Desktop Protocol client built on `ironrdp` with Network Level Authentication (NTLM/CredSSP).
 - **Responsive Viewport & Dynamic Resize**: Viewport dynamically adapts to client window dimensions and reports resolution changes to the remote desktop server.
 - **Accurate Scancode Input**: Translates modern web keyboard and mouse events directly into native Windows scancodes and mouse motion packets.
 
-### Remote File Editor & In-App Mini-IDE (⌘E / Ctrl+E)
-- **VS Code-Powered In-App Editor**: Bundled offline **Monaco Editor** with rich syntax highlighting, bracket pair colorization, indentation guides, code folding, search & replace, and code formatting (`Shift+Alt+F`).
-- **Sidebar Project Explorer & Global File Search**:
-  - **Tree File Explorer**: Browse, create, rename, and delete remote and local files and directories directly within the IDE sidebar.
-  - **Global Fast Regex Search**: Search across entire folder trees for text and regex patterns with match count badges, filename grouping, context snippets, and single-click jump to file line.
-- **Side-by-side & Inline Monaco Diff Viewer (⇧⌘D / Ctrl+Shift+D)**: Compare dirty working buffers against original disk content with visual split/inline diffing, added/removed line highlighting, and one-click revert.
-- **Integrated Bottom Mini-Terminal Drawer (⌃` / Ctrl+`)**: Resizable live terminal drawer embedded directly inside the IDE to execute build commands, git workflows, and test runners while editing code.
-- **Comprehensive Language Support**: Automatic syntax detection and styling for popular languages including:
-  - Python (`.py`, `.pyw`)
-  - C / C++ (`.c`, `.h`, `.cpp`, `.cc`, `.cxx`, `.hpp`)
-  - Java (`.java`) & Groovy (`.groovy`, `.gvy`, `.gradle`)
-  - JSON (`.json`), YAML (`.yml`, `.yaml`), TOML (`.toml`), INI (`.ini`, `.cfg`, `.conf`)
-  - Markdown (`.md`, `.markdown`) & Plain Text (`.txt`, `.log`, `.env`)
-  - Shell scripts (`.sh`, `.bash`, `.zsh`) & Dockerfile (`Dockerfile`)
-  - Rust (`.rs`), Go (`.go`), TypeScript / JavaScript (`.ts`, `.tsx`, `.js`, `.jsx`)
-  - HTML, CSS, SCSS, SQL, and more.
-- **Direct Streaming SFTP Remote Save (⌘S / Ctrl+S)**: Save changes directly back to remote servers over SFTP byte streams with dirty-state indicator (`•`) and non-destructive overwrite guards.
-- **Multi-Tab Workspace**: Open and manage multiple remote and local files concurrently in dedicated editor tabs with instant switching.
-- **SFTP Drawer Integration**: Double-click any file in the SFTP drawer or click the "📝 Edit" toolbar button to immediately open it in the editor.
+### Direct Terminal File Transfer & SFTP Drawer
+- **Direct Terminal Drag & Drop Upload**: Drag any file directly from Finder / File Explorer onto an active SSH terminal pane to trigger an immediate, high-speed SFTP streaming upload to the shell's **active working directory** (automatically resolved via OSC 7, OSC 133 semantic CWD markers, shell window title updates, and prompt path inspection), with live progress toast and terminal notification.
+- **Remote Host File Drawer (⌘J / Ctrl+J)**: Integrated slide-out file browser docked to the active SSH session tab.
+- **Desktop Drag & Drop**: Drop files directly from Finder / File Explorer onto the remote directory drawer to trigger streaming SFTP uploads.
+- **Clipboard Integration**: Copy files in your OS file manager and paste (⌘V / Ctrl+V) directly into the remote drawer.
+- **Direct Drag Out & File Dialogs**: Drag remote files out to your desktop or use native OS Save/Upload file dialogs for large files.
+- **Path Copying**: Instant ⌘C / Ctrl+C copying of selected remote paths.
 
-### Terminal Output Triggers & Desktop Alerts (🔔)
+### Snippets Library & Command Palette (⌘K)
+- **Parameterized Snippets Library**: Create, categorize, and organize reusable commands and multi-line scripts.
+- **Dynamic Parameter Prompts (`{{variable}}`)**: Define placeholders inside commands (e.g. `docker logs -f {{container}} --tail {{lines}}`) and receive interactive prompts to supply values before execution.
+- **Unified Command Palette (⌘K / Ctrl+K)**: Quick launcher to search across all saved connections, snippets, recordings, layout actions, and multi-exec toggles with instant keyboard execution.
+
+### Regex Triggers, Smart Highlights & Desktop Alerts (🔔)
+- **Clickable File:Line Smart Links**: Click any compiler output or stack trace (e.g., `src/main.rs:42:15` or `app.py:120`) to open the file directly at that exact line inside the in-app Mini-IDE.
+- **Auto-Detected URLs, IPs & UUIDs**: Interactive clickable links for HTTP/HTTPS URLs, IPv4/IPv6 addresses, and UUIDs in terminal output.
 - **Real-Time Stream Watchers**: Monitor incoming terminal streams for custom keywords, regular expressions, errors, and task completions.
 - **Audible & Desktop Notifications**: Configure pleasant audio chimes (`Web Audio API` synth) and native OS desktop alerts for long-running builds, fatal errors, test completions, or password prompts.
-- **Custom Alert Manager**: Easily create, edit, test, and toggle pattern watchers with built-in debouncing and cooldown protection.
 
-### Configuration Backup & Restore (📦 JSON Import/Export)
-- **Portable Backups**: Export and import complete workspace configurations—including Saved Profiles, SSH Jump Hosts, Port Tunnels, Parameterized Snippets, and Output Triggers—into portable, structured JSON files.
-- **Smart Restore Modes**: Merge imported connections and snippets with existing data or perform a clean overwrite.
+### Security, Known Hosts & Encrypted Backup (📦)
+- **AES-256-GCM Encrypted Workspace Backups**: Export and import complete workspace configurations—including Saved Profiles, SSH Jump Hosts, Port Tunnels, Parameterized Snippets, Themes, and Output Triggers—encrypted with AES-256-GCM and PBKDF2 key derivation for secure team sharing.
+- **SSH Known Hosts & Host Key Manager GUI**:
+  - **Host Key Verification & TOFU**: Strict verification against known public keys, automatic Trust-On-First-Use (TOFU) recording, and explicit MITM warnings for altered keys.
+  - **Known Hosts Inspection**: Search and inspect trusted host keys, key algorithms (Ed25519, ECDSA, RSA), and cryptographic SHA256 fingerprints.
+  - **Host Key Revocation & Manual Trust**: One-click revocation of stale/rebuilt host keys and manual addition of trusted server public keys.
+- **OS Native Keychain Storage**: Passwords and credentials securely stored using platform APIs (macOS Keychain via Security framework, Windows Credential Manager, Linux Secret Service / DBus).
+- **Encrypted Fallback Vault**: Zero-trust encrypted vault using **Argon2id** key derivation and **XChaCha20-Poly1305** AEAD encryption.
+- **Memory Zeroization**: Sensitive cryptographic material and cleartext passwords are scrubbed on drop (`zeroize`).
 
 ### Direct Terminal File Transfer & SFTP Drawer
 - **Direct Terminal Drag & Drop Upload**: Drag any file directly from Finder / File Explorer onto an active SSH terminal pane to trigger an immediate, high-speed SFTP streaming upload to the shell's **active working directory** (automatically resolved via OSC 7, OSC 133 semantic CWD markers, shell window title updates, and prompt path inspection), with live progress toast and terminal notification.
@@ -156,6 +202,11 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 | <kbd>⌘</kbd> + <kbd>S</kbd> | <kbd>Ctrl</kbd> + <kbd>S</kbd> | Save file in Mini-IDE (remotely over SFTP or locally) |
 | <kbd>⌘</kbd> + <kbd>C</kbd> | <kbd>Ctrl</kbd> + <kbd>C</kbd> | Copy selected terminal text / remote file path |
 | <kbd>⌘</kbd> + <kbd>V</kbd> | <kbd>Ctrl</kbd> + <kbd>V</kbd> | Paste text into terminal / upload copied file into SFTP drawer |
+| <kbd>🎨</kbd> | <kbd>🎨</kbd> | Open Terminal Themes & Appearance Customizer |
+| <kbd>📊</kbd> | <kbd>📊</kbd> | Open Remote System Resource Monitor & Process Manager |
+| <kbd>🚀</kbd> | <kbd>🚀</kbd> | Open Multi-Host Batch Command Execution (Batch Runner) |
+| <kbd>🔔</kbd> | <kbd>🔔</kbd> | Open Terminal Output Triggers & Desktop Alerts |
+| <kbd>📦</kbd> | <kbd>📦</kbd> | Open Encrypted Configuration Backup & Restore |
 
 ---
 

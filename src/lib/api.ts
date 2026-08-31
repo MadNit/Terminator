@@ -3,7 +3,8 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 export type SshAuth =
   | { method: "agent" }
   | { method: "password" }
-  | { method: "key"; path: string };
+  | { method: "key"; path: string }
+  | { method: "agent_socket"; socket_path: string };
 
 export type TransportSpec =
   | { kind: "local"; shell: string | null; cwd: string | null }
@@ -490,3 +491,58 @@ export const rdpResize = (id: string, width: number, height: number) =>
   invoke<void>("rdp_resize", { id, width, height });
 
 export const closeRdp = (id: string) => invoke<void>("close_rdp", { id });
+
+// ---------------------------------------------------------------------------
+// Command Execution & Batch Runner
+// ---------------------------------------------------------------------------
+
+export type ExecResult = {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+};
+
+export type BatchExecRequest = {
+  id: string;
+  label: string;
+  spec: TransportSpec;
+  command: string;
+  secretRef?: string | null;
+  password?: string | null;
+  jumpSecretRef?: string | null;
+  jumpPassword?: string | null;
+  cwd?: string | null;
+};
+
+export type BatchExecResult = {
+  id: string;
+  label: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error?: string | null;
+  durationMs: number;
+};
+
+export const execCommand = (
+  spec: TransportSpec,
+  command: string,
+  secretRef?: string | null,
+  password?: string | null,
+  jumpSecretRef?: string | null,
+  jumpPassword?: string | null,
+  cwd?: string | null,
+) =>
+  invoke<ExecResult>("exec_command", {
+    spec,
+    command,
+    secretRef: secretRef ?? null,
+    password: password ?? null,
+    jumpSecretRef: jumpSecretRef ?? null,
+    jumpPassword: jumpPassword ?? null,
+    cwd: cwd ?? null,
+  });
+
+export const batchExec = (requests: BatchExecRequest[]) =>
+  invoke<BatchExecResult[]>("batch_exec", { requests });
+

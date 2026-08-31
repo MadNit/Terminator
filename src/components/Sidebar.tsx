@@ -85,6 +85,9 @@ export function Sidebar({
   onOpenEditor,
   onOpenTriggers,
   onOpenBackup,
+  onOpenMonitor,
+  onOpenBatchRunner,
+  onOpenThemes,
   busy,
 }: {
   profiles: Profile[];
@@ -103,6 +106,9 @@ export function Sidebar({
   onOpenEditor?: () => void;
   onOpenTriggers?: () => void;
   onOpenBackup?: () => void;
+  onOpenMonitor?: () => void;
+  onOpenBatchRunner?: () => void;
+  onOpenThemes?: () => void;
   busy: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<Set<Kind>>(new Set());
@@ -243,6 +249,36 @@ export function Sidebar({
       </div>
 
       <div className="side-foot" style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+        {onOpenMonitor && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenMonitor}
+            title="Remote System Resource Monitor (CPU, RAM, Disk, Processes)"
+          >
+            <span style={{ fontSize: "13px" }}>📊</span>
+            <span>Resource Monitor</span>
+          </button>
+        )}
+        {onOpenBatchRunner && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenBatchRunner}
+            title="Multi-Host Batch Command Execution"
+          >
+            <span style={{ fontSize: "13px" }}>🚀</span>
+            <span>Batch Runner</span>
+          </button>
+        )}
+        {onOpenThemes && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenThemes}
+            title="Terminal Themes & Font Customizer"
+          >
+            <span style={{ fontSize: "13px" }}>🎨</span>
+            <span>Themes & Style</span>
+          </button>
+        )}
         {onOpenEditor && (
           <button
             className="side-foot-btn"

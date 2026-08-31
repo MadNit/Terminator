@@ -16,6 +16,7 @@ import {
   posixJoin,
   searchRemoteDir,
   searchLocalDir,
+  execCommand,
   type FileEntry,
   type Listing,
   type FileSearchResult,
@@ -324,8 +325,21 @@ export function RemoteEditorModal({
   const [diffMode, setDiffMode] = useState<boolean>(false);
   const [diffSideBySide, setDiffSideBySide] = useState<boolean>(true);
 
-  // Sidebar View Tab: "explorer" | "search"
-  const [sidebarTab, setSidebarTab] = useState<"explorer" | "search">("explorer");
+  // Sidebar View Tab: "explorer" | "search" | "git"
+  const [sidebarTab, setSidebarTab] = useState<"explorer" | "search" | "git">("explorer");
+
+  // Git Source Control State
+  const [gitBranch, setGitBranch] = useState<string>("");
+  const [gitBranches, setGitBranches] = useState<string[]>([]);
+  const [gitStaged, setGitStaged] = useState<{ file: string; status: string }[]>([]);
+  const [gitUnstaged, setGitUnstaged] = useState<{ file: string; status: string }[]>([]);
+  const [gitLogs, setGitLogs] = useState<{ hash: string; author: string; date: string; message: string }[]>([]);
+  const [gitCommitMsg, setGitCommitMsg] = useState<string>("");
+  const [gitLoading, setGitLoading] = useState<boolean>(false);
+  const [gitActionLoading, setGitActionLoading] = useState<boolean>(false);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [gitStatusToast, setGitStatusToast] = useState<string>("");
+  const [isGitRepo, setIsGitRepo] = useState<boolean>(true);
 
   // Project Explorer Sidebar State
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
@@ -841,6 +855,180 @@ export function RemoteEditorModal({
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [open]);
 
+  // Fetch Git status and history
+  const fetchGitStatus = useCallback(async () => {
+    try {
+      setGitLoading(true);
+      setGitError(null);
+      const targetDir = explorerPath || (isLocal ? await localHome() : (sessionId ? await remoteHome(sessionId) : "/"));
+      const script = `cd "${targetDir}" 2>/dev/null || exit 1
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "===NOT_GIT==="
+  exit 0
+fi
+echo "===BRANCH==="
+git branch --show-current 2>/dev/null || git rev-parse --short HEAD 2>/dev/null
+echo "===BRANCHES==="
+git branch --format="%(refname:short)" 2>/dev/null
+echo "===STATUS==="
+git status --porcelain=v1 -uall 2>/dev/null
+echo "===LOGS==="
+git log -n 12 --format="%h|%an|%cr|%s" 2>/dev/null
+`;
+      const targetSpec: TransportSpec = spec ?? { kind: "local", shell: null, cwd: targetDir };
+      const res = await execCommand(
+        targetSpec,
+        script,
+        secretRef,
+        password,
+        jumpSecretRef,
+        jumpPassword,
+        targetDir
+      );
+
+      if (res.stdout.includes("===NOT_GIT===")) {
+        setIsGitRepo(false);
+        setGitBranch("");
+        setGitStaged([]);
+        setGitUnstaged([]);
+        setGitLogs([]);
+        return;
+      }
+
+      setIsGitRepo(true);
+      const lines = res.stdout.split("\n");
+      let section = "";
+      let currentBranch = "main";
+      const branchesList: string[] = [];
+      const stagedList: { file: string; status: string }[] = [];
+      const unstagedList: { file: string; status: string }[] = [];
+      const logsList: { hash: string; author: string; date: string; message: string }[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("===BRANCH===")) { section = "BRANCH"; continue; }
+        if (trimmed.startsWith("===BRANCHES===")) { section = "BRANCHES"; continue; }
+        if (trimmed.startsWith("===STATUS===")) { section = "STATUS"; continue; }
+        if (trimmed.startsWith("===LOGS===")) { section = "LOGS"; continue; }
+
+        if (!trimmed) continue;
+
+        if (section === "BRANCH") {
+          currentBranch = trimmed;
+        } else if (section === "BRANCHES") {
+          branchesList.push(trimmed);
+        } else if (section === "STATUS") {
+          const x = line[0];
+          const y = line[1];
+          const filePath = line.substring(3).trim();
+
+          if (x && x !== " " && x !== "?") {
+            stagedList.push({ file: filePath, status: x });
+          }
+          if (y && y !== " ") {
+            unstagedList.push({ file: filePath, status: y });
+          } else if (x === "?" && y === "?") {
+            unstagedList.push({ file: filePath, status: "?" });
+          }
+        } else if (section === "LOGS") {
+          const parts = trimmed.split("|");
+          if (parts.length >= 4) {
+            logsList.push({
+              hash: parts[0],
+              author: parts[1],
+              date: parts[2],
+              message: parts.slice(3).join("|"),
+            });
+          }
+        }
+      }
+
+      setGitBranch(currentBranch);
+      setGitBranches(branchesList);
+      setGitStaged(stagedList);
+      setGitUnstaged(unstagedList);
+      setGitLogs(logsList);
+    } catch (err: any) {
+      setGitError(err?.message || String(err));
+    } finally {
+      setGitLoading(false);
+    }
+  }, [explorerPath, isLocal, sessionId, spec, secretRef, password, jumpSecretRef, jumpPassword]);
+
+  useEffect(() => {
+    if (open && sidebarTab === "git") {
+      void fetchGitStatus();
+    }
+  }, [open, sidebarTab, fetchGitStatus]);
+
+  const runGitCmd = async (cmd: string, successMsg?: string) => {
+    try {
+      setGitActionLoading(true);
+      const targetDir = explorerPath || (isLocal ? await localHome() : "/");
+      const targetSpec: TransportSpec = spec ?? { kind: "local", shell: null, cwd: targetDir };
+      const res = await execCommand(
+        targetSpec,
+        `cd "${targetDir}" && ${cmd}`,
+        secretRef,
+        password,
+        jumpSecretRef,
+        jumpPassword,
+        targetDir
+      );
+      if (res.exit_code === 0) {
+        if (successMsg) {
+          setGitStatusToast(successMsg);
+          setTimeout(() => setGitStatusToast(""), 3000);
+        }
+        await fetchGitStatus();
+      } else {
+        alert(`Git error: ${res.stderr || res.stdout}`);
+      }
+    } catch (err: any) {
+      alert(`Git action failed: ${err?.message || err}`);
+    } finally {
+      setGitActionLoading(false);
+    }
+  };
+
+  const handleViewGitDiff = async (file: string, staged: boolean) => {
+    try {
+      const targetDir = explorerPath || "/";
+      const targetSpec: TransportSpec = spec ?? { kind: "local", shell: null, cwd: targetDir };
+      const fullPath = targetDir.endsWith("/") ? `${targetDir}${file}` : `${targetDir}/${file}`;
+
+      const res = await execCommand(
+        targetSpec,
+        `cd "${targetDir}" && git show ${staged ? "HEAD" : ":0"}:"${file}" 2>/dev/null || echo ""`,
+        secretRef,
+        password,
+        jumpSecretRef,
+        jumpPassword,
+        targetDir
+      );
+      const headContent = res.stdout;
+
+      await openFile({
+        path: fullPath,
+        name: file.split("/").pop() || file,
+        sessionId,
+        hostLabel,
+        isLocal,
+      });
+
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.path === fullPath
+            ? { ...t, savedContent: headContent }
+            : t
+        )
+      );
+      setDiffMode(true);
+    } catch (err) {
+      console.error("Failed to load git diff:", err);
+    }
+  };
+
   // Filter and sort directory entries
   const filteredEntries = useMemo(() => {
     if (!listing) return [];
@@ -902,6 +1090,21 @@ export function RemoteEditorModal({
               title="Toggle Global Search in Folder (Ctrl+Shift+F)"
             >
               🔍 Search
+            </button>
+            <button
+              className={`editor-btn icon-only ${sidebarOpen && sidebarTab === "git" ? "active" : ""}`}
+              onClick={() => {
+                if (sidebarOpen && sidebarTab === "git") {
+                  setSidebarOpen(false);
+                } else {
+                  setSidebarOpen(true);
+                  setSidebarTab("git");
+                  void fetchGitStatus();
+                }
+              }}
+              title="Toggle Git Source Control (Ctrl+Shift+G)"
+            >
+              🌿 Git {gitStaged.length + gitUnstaged.length > 0 && `(${gitStaged.length + gitUnstaged.length})`}
             </button>
             {(activeTab?.hostLabel || hostLabel) && (
               <span className="editor-host-tag">
@@ -1052,6 +1255,16 @@ export function RemoteEditorModal({
                   title="Global Search in Directory (Ctrl+Shift+F)"
                 >
                   🔍 Search
+                </button>
+                <button
+                  className={`editor-sidebar-tab-btn ${sidebarTab === "git" ? "active" : ""}`}
+                  onClick={() => {
+                    setSidebarTab("git");
+                    void fetchGitStatus();
+                  }}
+                  title="Git Source Control (Ctrl+Shift+G)"
+                >
+                  🌿 Git {gitStaged.length + gitUnstaged.length > 0 ? `(${gitStaged.length + gitUnstaged.length})` : ""}
                 </button>
               </div>
 
@@ -1489,6 +1702,291 @@ export function RemoteEditorModal({
                       </div>
                     )}
                   </div>
+                </div>
+              )}
+
+              {/* View 3: Git Source Control Panel */}
+              {sidebarTab === "git" && (
+                <div className="editor-git-panel">
+                  {/* Git Header & Branch */}
+                  <div className="editor-git-header">
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      {gitBranches.length > 1 ? (
+                        <select
+                          className="editor-git-branch-badge"
+                          style={{ cursor: "pointer", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" }}
+                          value={gitBranch}
+                          onChange={(e) => void runGitCmd(`git checkout "${e.target.value}"`, `Switched to ${e.target.value}`)}
+                          title="Switch Branch"
+                        >
+                          {gitBranches.map((b) => (
+                            <option key={b} value={b}>
+                              🌿 {b}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="editor-git-branch-badge">
+                          🌿 {gitBranch || "No Repo"}
+                        </span>
+                      )}
+                      {gitStatusToast && (
+                        <span style={{ fontSize: 11, color: "var(--lime)" }}>
+                          {gitStatusToast}
+                        </span>
+                      )}
+                      {gitError && (
+                        <span style={{ fontSize: 11, color: "var(--danger)" }} title={gitError}>
+                          ⚠️ Error
+                        </span>
+                      )}
+                    </div>
+                    <div className="editor-sidebar-actions">
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => void fetchGitStatus()}
+                        disabled={gitLoading || gitActionLoading}
+                        title="Refresh Git Status"
+                      >
+                        🔄
+                      </button>
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => void runGitCmd("git pull", "Pulled latest changes ✓")}
+                        disabled={gitLoading || gitActionLoading || !isGitRepo}
+                        title="Git Pull from remote"
+                      >
+                        ⬇️
+                      </button>
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => void runGitCmd("git push", "Pushed commits to remote ✓")}
+                        disabled={gitLoading || gitActionLoading || !isGitRepo}
+                        title="Git Push to remote"
+                      >
+                        ⬆️
+                      </button>
+                    </div>
+                  </div>
+
+                  {!isGitRepo ? (
+                    <div className="editor-sidebar-empty">
+                      <span style={{ fontSize: 24, opacity: 0.5 }}>🌿</span>
+                      <span>Directory is not a git repository</span>
+                      <button
+                        className="editor-btn primary"
+                        style={{ marginTop: 8, fontSize: 11 }}
+                        onClick={() => void runGitCmd("git init", "Initialized git repository ✓")}
+                        disabled={gitActionLoading}
+                      >
+                        Initialize Git Repository
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Commit Message Box */}
+                      <div className="editor-git-commit-box">
+                        <textarea
+                          className="editor-git-commit-input"
+                          placeholder="Commit message (Ctrl+Enter to commit)..."
+                          value={gitCommitMsg}
+                          onChange={(e) => setGitCommitMsg(e.target.value)}
+                          onKeyDown={(e) => {
+                            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                              if (gitCommitMsg.trim() && (gitStaged.length > 0 || gitUnstaged.length > 0)) {
+                                void runGitCmd(
+                                  gitStaged.length === 0
+                                    ? `git commit -am "${gitCommitMsg.replace(/"/g, '\\"')}"`
+                                    : `git commit -m "${gitCommitMsg.replace(/"/g, '\\"')}"`,
+                                  "Committed changes ✓"
+                                ).then(() => setGitCommitMsg(""));
+                              }
+                            }
+                          }}
+                        />
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 10, color: "var(--dim)" }}>
+                            {gitStaged.length} staged, {gitUnstaged.length} changed
+                          </span>
+                          <button
+                            className="editor-btn primary"
+                            style={{ padding: "3px 12px", fontSize: 11 }}
+                            onClick={() => {
+                              if (!gitCommitMsg.trim()) return;
+                              void runGitCmd(
+                                gitStaged.length === 0
+                                  ? `git commit -am "${gitCommitMsg.replace(/"/g, '\\"')}"`
+                                  : `git commit -m "${gitCommitMsg.replace(/"/g, '\\"')}"`,
+                                "Committed changes ✓"
+                              ).then(() => setGitCommitMsg(""));
+                            }}
+                            disabled={
+                              gitActionLoading ||
+                              !gitCommitMsg.trim() ||
+                              (gitStaged.length === 0 && gitUnstaged.length === 0)
+                            }
+                          >
+                            {gitActionLoading ? "Working..." : "✓ Commit"}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Changed Files Lists */}
+                      <div style={{ flex: 1, overflowY: "auto" }}>
+                        {/* Staged Changes Section */}
+                        {gitStaged.length > 0 && (
+                          <div>
+                            <div className="editor-git-section-title">
+                              <span>Staged Changes ({gitStaged.length})</span>
+                              <button
+                                className="editor-sidebar-action-btn"
+                                onClick={() => void runGitCmd("git restore --staged .", "Unstaged all files")}
+                                title="Unstage All"
+                              >
+                                ➖ All
+                              </button>
+                            </div>
+                            {gitStaged.map((item) => (
+                              <div
+                                key={`staged-${item.file}`}
+                                className="editor-git-file-row"
+                                onClick={() => void handleViewGitDiff(item.file, true)}
+                                title={`Click to view diff of ${item.file}`}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                                  <span
+                                    className={`editor-git-file-status ${
+                                      item.status === "A"
+                                        ? "added"
+                                        : item.status === "D"
+                                        ? "deleted"
+                                        : "modified"
+                                    }`}
+                                  >
+                                    {item.status}
+                                  </span>
+                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {item.file}
+                                  </span>
+                                </div>
+                                <button
+                                  className="editor-sidebar-action-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void runGitCmd(`git restore --staged "${item.file}"`);
+                                  }}
+                                  title="Unstage file"
+                                >
+                                  ➖
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Working Tree Changes Section */}
+                        <div>
+                          <div className="editor-git-section-title">
+                            <span>Changes ({gitUnstaged.length})</span>
+                            {gitUnstaged.length > 0 && (
+                              <button
+                                className="editor-sidebar-action-btn"
+                                onClick={() => void runGitCmd("git add -A", "Staged all files")}
+                                title="Stage All"
+                              >
+                                ➕ All
+                              </button>
+                            )}
+                          </div>
+                          {gitUnstaged.length === 0 && gitStaged.length === 0 ? (
+                            <div className="editor-sidebar-empty" style={{ padding: "16px 10px" }}>
+                              <span style={{ fontSize: 11, color: "var(--lime)" }}>✓ Working tree clean</span>
+                            </div>
+                          ) : (
+                            gitUnstaged.map((item) => (
+                              <div
+                                key={`unstaged-${item.file}`}
+                                className="editor-git-file-row"
+                                onClick={() => void handleViewGitDiff(item.file, false)}
+                                title={`Click to view diff of ${item.file}`}
+                              >
+                                <div style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                                  <span
+                                    className={`editor-git-file-status ${
+                                      item.status === "?"
+                                        ? "untracked"
+                                        : item.status === "D"
+                                        ? "deleted"
+                                        : "modified"
+                                    }`}
+                                  >
+                                    {item.status}
+                                  </span>
+                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {item.file}
+                                  </span>
+                                </div>
+                                <div style={{ display: "flex", gap: 2 }}>
+                                  <button
+                                    className="editor-sidebar-action-btn"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void runGitCmd(`git add "${item.file}"`);
+                                    }}
+                                    title="Stage file"
+                                  >
+                                    ➕
+                                  </button>
+                                  {item.status !== "?" && (
+                                    <button
+                                      className="editor-sidebar-action-btn"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (confirm(`Discard changes in ${item.file}?`)) {
+                                          void runGitCmd(`git checkout -- "${item.file}"`);
+                                        }
+                                      }}
+                                      title="Discard changes"
+                                    >
+                                      ↩️
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        {/* Recent Commit History */}
+                        {gitLogs.length > 0 && (
+                          <div style={{ marginTop: 12 }}>
+                            <div className="editor-git-section-title">
+                              <span>Recent Commits</span>
+                            </div>
+                            {gitLogs.map((log) => (
+                              <div
+                                key={log.hash}
+                                style={{
+                                  padding: "6px 10px",
+                                  borderBottom: "1px solid rgba(255,255,255,0.02)",
+                                  fontSize: 11,
+                                  fontFamily: "var(--mono)",
+                                }}
+                              >
+                                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
+                                  <span style={{ color: "var(--lime)", fontWeight: 600 }}>{log.hash}</span>
+                                  <span style={{ color: "var(--dim)", fontSize: 10 }}>{log.date}</span>
+                                </div>
+                                <div style={{ color: "var(--fg)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {log.message}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </aside>

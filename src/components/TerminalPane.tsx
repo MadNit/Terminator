@@ -9,6 +9,12 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { readClipboard, writeClipboard } from "../lib/clipboard";
 import { loadTriggers, playChime, sendDesktopNotification } from "../lib/triggers";
 import {
+  loadAppearanceSettings,
+  getThemePreset,
+  type TerminalAppearanceSettings,
+} from "../lib/themes";
+import type { ILink } from "@xterm/xterm";
+import {
   closeSession,
   decodeB64,
   logFrontend,
@@ -40,6 +46,8 @@ interface Props {
   onReconnect: () => void;
   /** Close the tab this pane lives in. */
   onClose: () => void;
+  /** Open file in Mini-IDE when clicking file:line links */
+  onOpenFile?: (path: string, line?: number) => void;
 }
 
 function baseName(path: string): string {
@@ -59,6 +67,7 @@ export function TerminalPane({
   onExit,
   onReconnect,
   onClose,
+  onOpenFile,
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -88,8 +97,8 @@ export function TerminalPane({
     failed?: string;
   } | null>(null);
 
-  const cb = useRef({ onExit, onReconnect, onClose, onInputData });
-  cb.current = { onExit, onReconnect, onClose, onInputData };
+  const cb = useRef({ onExit, onReconnect, onClose, onInputData, onOpenFile });
+  cb.current = { onExit, onReconnect, onClose, onInputData, onOpenFile };
 
   const cancelAutoReconnect = () => {
     if (reconnectTimerRef.current !== null) {
@@ -125,22 +134,19 @@ export function TerminalPane({
     }
     if (!hostRef.current || teardownRef.current) return deferTeardown;
 
+    const initialSettings = loadAppearanceSettings();
+    const activePreset = getThemePreset(initialSettings.themeId);
+
     const term = new Terminal({
-      allowTransparency: false,
-      fontFamily:
-        '"JetBrains Mono", ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace',
-      fontSize: 13,
-      lineHeight: 1.2,
-      cursorBlink: true,
+      allowTransparency: initialSettings.backgroundOpacity < 1,
+      fontFamily: initialSettings.fontFamily,
+      fontSize: initialSettings.fontSize,
+      lineHeight: initialSettings.lineHeight,
+      cursorStyle: initialSettings.cursorStyle,
+      cursorBlink: initialSettings.cursorBlink,
       scrollback: 10000,
       macOptionIsMeta: true,
-      theme: {
-        background: "#0d111a",
-        foreground: "#f3f4f6",
-        cursor: "#bef264",
-        cursorAccent: "#0d111a",
-        selectionBackground: "rgba(190, 242, 100, 0.25)",
-      },
+      theme: activePreset.theme,
     });
     termRef.current = term;
 
@@ -152,6 +158,75 @@ export function TerminalPane({
         window.open(uri, "_blank", "noopener,noreferrer");
       }),
     );
+
+    // Register Smart Link Provider for file:line jump and IP address copy
+    term.registerLinkProvider({
+      provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void) {
+        const line = term.buffer.active.getLine(bufferLineNumber - 1)?.translateToString(true) ?? "";
+        const links: ILink[] = [];
+
+        // Match file:line patterns (e.g. src/App.tsx:42 or ./config.json:12)
+        const fileLineRegex = /([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+):(\d+)/g;
+        let match: RegExpExecArray | null;
+        while ((match = fileLineRegex.exec(line)) !== null) {
+          const full = match[0];
+          const filePath = match[1];
+          const lineNum = parseInt(match[2], 10);
+          const startX = match.index + 1;
+          const endX = startX + full.length;
+          links.push({
+            range: {
+              start: { x: startX, y: bufferLineNumber },
+              end: { x: endX, y: bufferLineNumber },
+            },
+            text: full,
+            activate: () => {
+              if (cb.current.onOpenFile) {
+                cb.current.onOpenFile(filePath, lineNum);
+              } else {
+                writeClipboard(full);
+              }
+            },
+          });
+        }
+
+        // Match IP:port patterns (e.g. 192.168.1.100:3000)
+        const ipRegex = /\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?::\d{1,5})?)\b/g;
+        while ((match = ipRegex.exec(line)) !== null) {
+          const ip = match[1];
+          const startX = match.index + 1;
+          const endX = startX + ip.length;
+          links.push({
+            range: {
+              start: { x: startX, y: bufferLineNumber },
+              end: { x: endX, y: bufferLineNumber },
+            },
+            text: ip,
+            activate: () => {
+              writeClipboard(ip);
+            },
+          });
+        }
+
+        callback(links);
+      },
+    });
+
+    // Listen to appearance live updates
+    const onAppearanceChange = (e: Event) => {
+      const customEvent = e as CustomEvent<TerminalAppearanceSettings>;
+      if (!customEvent.detail) return;
+      const s = customEvent.detail;
+      const t = getThemePreset(s.themeId);
+      term.options.theme = t.theme;
+      term.options.fontFamily = s.fontFamily;
+      term.options.fontSize = s.fontSize;
+      term.options.lineHeight = s.lineHeight;
+      term.options.cursorStyle = s.cursorStyle;
+      term.options.cursorBlink = s.cursorBlink;
+      fit.fit();
+    };
+    window.addEventListener("terminator:appearance_changed", onAppearanceChange);
 
     term.open(hostRef.current);
     try {
@@ -483,6 +558,7 @@ export function TerminalPane({
       onSelection.dispose();
       window.clearTimeout(copyTimer);
       document.removeEventListener("mouseup", flushCopy);
+      window.removeEventListener("terminator:appearance_changed", onAppearanceChange);
       host.removeEventListener("mousedown", onMouseDown);
       host.removeEventListener("contextmenu", onContextMenu);
       host.removeEventListener("auxclick", onAuxClick);

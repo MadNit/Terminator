@@ -987,6 +987,145 @@ async fn download_file(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Command Execution & Batch Runner
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchExecRequest {
+    id: String,
+    label: String,
+    spec: TransportSpec,
+    command: String,
+    secret_ref: Option<String>,
+    password: Option<String>,
+    jump_secret_ref: Option<String>,
+    jump_password: Option<String>,
+    cwd: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchExecResult {
+    id: String,
+    label: String,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+    error: Option<String>,
+    duration_ms: u64,
+}
+
+#[tauri::command]
+async fn exec_command(
+    state: State<'_, AppState>,
+    spec: TransportSpec,
+    command: String,
+    secret_ref: Option<String>,
+    password: Option<String>,
+    jump_secret_ref: Option<String>,
+    jump_password: Option<String>,
+    cwd: Option<String>,
+) -> Result<terminator_core::session::ExecResult, String> {
+    let mut creds = Credentials::default();
+    if let Some(p) = password {
+        creds.secret = Some(p);
+    } else if let Some(r) = secret_ref {
+        let sec = state.secrets.clone();
+        creds.secret = blocking_secrets(&sec, move |s| s.get(&r)).await?;
+    }
+    if let Some(jp) = jump_password {
+        creds.jump_secret = Some(jp);
+    } else if let Some(jr) = jump_secret_ref {
+        let sec = state.secrets.clone();
+        creds.jump_secret = blocking_secrets(&sec, move |s| s.get(&jr)).await?;
+    }
+
+    state
+        .sessions
+        .exec_command(&spec, &command, creds, cwd.as_deref())
+        .await
+        .map_err(e)
+}
+
+#[tauri::command]
+async fn batch_exec(
+    state: State<'_, AppState>,
+    requests: Vec<BatchExecRequest>,
+) -> Result<Vec<BatchExecResult>, String> {
+    let mut handles = Vec::new();
+
+    for req in requests {
+        let state_sessions = state.sessions.clone();
+        let secrets = state.secrets.clone();
+
+        handles.push(tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            let mut creds = Credentials::default();
+            if let Some(p) = req.password {
+                creds.secret = Some(p);
+            } else if let Some(r) = req.secret_ref {
+                let sec = secrets.clone();
+                if let Ok(Ok(Some(s))) = tokio::task::spawn_blocking(move || sec.get(&r)).await {
+                    creds.secret = Some(s);
+                }
+            }
+            if let Some(jp) = req.jump_password {
+                creds.jump_secret = Some(jp);
+            } else if let Some(jr) = req.jump_secret_ref {
+                let sec = secrets.clone();
+                if let Ok(Ok(Some(s))) = tokio::task::spawn_blocking(move || sec.get(&jr)).await {
+                    creds.jump_secret = Some(s);
+                }
+            }
+
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                state_sessions.exec_command(&req.spec, &req.command, creds, req.cwd.as_deref()),
+            )
+            .await
+            {
+                Ok(Ok(res)) => BatchExecResult {
+                    id: req.id,
+                    label: req.label,
+                    exit_code: res.exit_code,
+                    stdout: res.stdout,
+                    stderr: res.stderr,
+                    error: None,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                },
+                Ok(Err(err)) => BatchExecResult {
+                    id: req.id,
+                    label: req.label,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    error: Some(err.to_string()),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                },
+                Err(_) => BatchExecResult {
+                    id: req.id,
+                    label: req.label,
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    error: Some("Command timed out after 60 seconds".into()),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                },
+            }
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(res) = handle.await {
+            results.push(res);
+        }
+    }
+    Ok(results)
+}
+
 #[cfg(target_os = "macos")]
 fn disable_press_and_hold() {
     use std::ffi::c_void;
@@ -1174,6 +1313,8 @@ pub fn run() {
             write_local_text_file,
             search_remote_dir,
             search_local_dir,
+            exec_command,
+            batch_exec,
             log_frontend,
         ])
         .run(tauri::generate_context!())

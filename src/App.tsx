@@ -13,6 +13,9 @@ import { SnippetManagerModal } from "./components/SnippetManagerModal";
 import { KnownHostsModal } from "./components/KnownHostsModal";
 import { TriggerManagerModal } from "./components/TriggerManagerModal";
 import { BackupModal } from "./components/BackupModal";
+import { ThemeCustomizerModal } from "./components/ThemeCustomizerModal";
+import { ResourceMonitorModal } from "./components/ResourceMonitorModal";
+import { BatchRunnerModal } from "./components/BatchRunnerModal";
 import { CommandPalette } from "./components/CommandPalette";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
@@ -113,6 +116,9 @@ export default function App() {
   const [knownHostsOpen, setKnownHostsOpen] = useState(false);
   const [triggersOpen, setTriggersOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
+  const [themesOpen, setThemesOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorInitialFile, setEditorInitialFile] = useState<OpenFileTarget | null>(null);
@@ -526,6 +532,9 @@ export default function App() {
         onOpenKnownHosts={() => setKnownHostsOpen(true)}
         onOpenTriggers={() => setTriggersOpen(true)}
         onOpenBackup={() => setBackupOpen(true)}
+        onOpenMonitor={() => setMonitorOpen(true)}
+        onOpenBatchRunner={() => setBatchOpen(true)}
+        onOpenThemes={() => setThemesOpen(true)}
         onOpenEditor={() => setEditorOpen(true)}
         splitLayout={splitLayout}
         onSplitLayout={setSplitLayout}
@@ -559,6 +568,9 @@ export default function App() {
           onOpenKnownHosts={() => setKnownHostsOpen(true)}
           onOpenTriggers={() => setTriggersOpen(true)}
           onOpenBackup={() => setBackupOpen(true)}
+          onOpenMonitor={() => setMonitorOpen(true)}
+          onOpenBatchRunner={() => setBatchOpen(true)}
+          onOpenThemes={() => setThemesOpen(true)}
           onOpenEditor={() => setEditorOpen(true)}
           busy={busy}
         />
@@ -899,6 +911,33 @@ export default function App() {
         />
       )}
 
+      {themesOpen && (
+        <ThemeCustomizerModal
+          open={themesOpen}
+          onClose={() => setThemesOpen(false)}
+        />
+      )}
+
+      {monitorOpen && (
+        <ResourceMonitorModal
+          open={monitorOpen}
+          spec={activeTab?.spec}
+          hostLabel={activeTab?.title}
+          secretRef={activeTab?.secretRef}
+          password={activeTab?.password}
+          jumpSecretRef={activeTab?.jumpSecretRef}
+          jumpPassword={activeTab?.jumpPassword}
+          onClose={() => setMonitorOpen(false)}
+        />
+      )}
+
+      {batchOpen && (
+        <BatchRunnerModal
+          open={batchOpen}
+          onClose={() => setBatchOpen(false)}
+        />
+      )}
+
       <RemoteEditorModal
         open={editorOpen}
         initialFile={editorInitialFile}
@@ -978,6 +1017,27 @@ export default function App() {
               subtitle: "Configure regex watchers, audio chimes, and notifications for terminal output",
               icon: "🔔",
               perform: () => setTriggersOpen(true),
+            },
+            {
+              id: "open-monitor",
+              title: "Remote System Resource Monitor",
+              subtitle: "Live CPU, RAM, Disk utilization gauges and Process Manager",
+              icon: "📊",
+              perform: () => setMonitorOpen(true),
+            },
+            {
+              id: "open-batch",
+              title: "Multi-Host Batch Command Execution",
+              subtitle: "Run scripts across multiple SSH hosts simultaneously with aggregated logs",
+              icon: "🚀",
+              perform: () => setBatchOpen(true),
+            },
+            {
+              id: "open-themes",
+              title: "Terminal Themes & Appearance Customizer",
+              subtitle: "Catppuccin, Dracula, Nord, Tokyo Night, Solarized, custom fonts, cursor style",
+              icon: "🎨",
+              perform: () => setThemesOpen(true),
             },
             {
               id: "open-backup",

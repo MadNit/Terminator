@@ -23,6 +23,9 @@ export function AppHeader({
   onOpenEditor,
   onOpenTriggers,
   onOpenBackup,
+  onOpenMonitor,
+  onOpenBatchRunner,
+  onOpenThemes,
   splitLayout,
   onSplitLayout,
   broadcast,
@@ -43,6 +46,9 @@ export function AppHeader({
   onOpenEditor?: () => void;
   onOpenTriggers?: () => void;
   onOpenBackup?: () => void;
+  onOpenMonitor?: () => void;
+  onOpenBatchRunner?: () => void;
+  onOpenThemes?: () => void;
   splitLayout?: "1x1" | "1x2" | "2x1" | "2x2";
   onSplitLayout?: (layout: "1x1" | "1x2" | "2x1" | "2x2") => void;
   broadcast?: boolean;
@@ -158,6 +164,15 @@ export function AppHeader({
       </div>
 
       <nav className="appnav">
+        <button className="navlink" onClick={onOpenMonitor} title="Remote System Resource Monitor (CPU, RAM, Disk, Processes)">
+          📊 Monitor
+        </button>
+        <button className="navlink" onClick={onOpenBatchRunner} title="Multi-Host Batch Command Execution">
+          🚀 Batch
+        </button>
+        <button className="navlink" onClick={onOpenThemes} title="Terminal Themes & Font Customizer">
+          🎨 Themes
+        </button>
         <button className="navlink" onClick={onOpenEditor} title="Open in-app Mini-IDE Code Editor (⌘E)">
           📝 Mini-IDE
         </button>

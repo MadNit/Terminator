@@ -43,6 +43,13 @@ const MAX_BATCH: usize = 256 * 1024;
 /// How often buffered taps are pushed to disk while a session is idle.
 const FLUSH_TICK: Duration = Duration::from_millis(400);
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExecResult {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 pub struct Session {
     pub id: Uuid,
     pub title: String,
@@ -248,6 +255,55 @@ impl SessionManager {
     /// calling this per directory listing is cheap after the first time.
     pub async fn files(&self, id: Uuid) -> Result<Arc<dyn crate::files::RemoteFs>> {
         self.get(id)?.transport.files().await
+    }
+
+    /// Execute a one-shot command against a local or remote target.
+    pub async fn exec_command(
+        &self,
+        spec: &TransportSpec,
+        command: &str,
+        #[allow(unused_variables)] creds: Credentials,
+        #[allow(unused_variables)] cwd: Option<&str>,
+    ) -> Result<ExecResult> {
+        match spec {
+            TransportSpec::Local { .. } => {
+                let (exit_code, stdout, stderr) =
+                    crate::transport::pty::PtyTransport::exec_local(command, cwd).await?;
+                Ok(ExecResult {
+                    exit_code,
+                    stdout,
+                    stderr,
+                })
+            }
+            #[cfg(feature = "ssh")]
+            TransportSpec::Ssh { .. } => {
+                let known_hosts = self
+                    .log_dir
+                    .parent()
+                    .unwrap_or(&self.log_dir)
+                    .join("known_hosts");
+                let ssh_creds = crate::transport::ssh::SshCredentials {
+                    secret: creds.secret,
+                    key_passphrase: creds.key_passphrase,
+                    jump_secret: creds.jump_secret,
+                    jump_key_passphrase: creds.jump_key_passphrase,
+                };
+                let (exit_code, stdout, stderr) =
+                    crate::transport::ssh::SshTransport::exec_command(
+                        spec,
+                        command,
+                        &ssh_creds,
+                        &known_hosts,
+                    )
+                    .await?;
+                Ok(ExecResult {
+                    exit_code,
+                    stdout,
+                    stderr,
+                })
+            }
+            other => Err(anyhow!("command execution not supported on {}", other.label())),
+        }
     }
 
     fn get(&self, id: Uuid) -> Result<Arc<Session>> {

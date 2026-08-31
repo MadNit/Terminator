@@ -998,3 +998,122 @@
   color: var(--fg);
   font-size: 10px;
 }
+
+/* Git Source Control Sidebar */
+.editor-git-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-git-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: var(--ink-900);
+  border-bottom: 1px solid var(--ink-750);
+}
+
+.editor-git-branch-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(96, 165, 250, 0.15);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  color: #93c5fd;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: var(--mono);
+  font-weight: 600;
+}
+
+.editor-git-commit-box {
+  padding: 8px 10px;
+  background: var(--ink-850);
+  border-bottom: 1px solid var(--ink-750);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.editor-git-commit-input {
+  width: 100%;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-700);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font-size: 12px;
+  font-family: var(--mono);
+  padding: 6px 8px;
+  resize: none;
+  min-height: 50px;
+  outline: none;
+}
+
+.editor-git-commit-input:focus {
+  border-color: var(--lime);
+}
+
+.editor-git-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--ink-900);
+  border-bottom: 1px solid var(--ink-800);
+  letter-spacing: 0.5px;
+}
+
+.editor-git-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--fg);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  transition: background 0.1s ease;
+}
+
+.editor-git-file-row:hover {
+  background: var(--ink-750);
+}
+
+.editor-git-file-status {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+.editor-git-file-status.modified {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.15);
+}
+
+.editor-git-file-status.added {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.15);
+}
+
+.editor-git-file-status.deleted {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.15);
+}
+
+.editor-git-file-status.untracked {
+  color: #60a5fa;
+  background: rgba(96, 165, 250, 0.15);
+}
+

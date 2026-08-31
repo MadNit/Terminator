@@ -50,6 +50,11 @@ export function ConnectDialog({
   const [method, setMethod] = useState<SshAuth["method"]>(
     e?.kind === "ssh" ? e.auth.method : "agent",
   );
+  const [socketPath, setSocketPath] = useState(
+    e?.kind === "ssh" && e.auth.method === "agent_socket"
+      ? e.auth.socket_path
+      : "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+  );
   const [keyPath, setKeyPath] = useState(
     e?.kind === "ssh" && e.auth.method === "key"
       ? e.auth.path
@@ -127,10 +132,14 @@ export function ConnectDialog({
     if (kind === "local") {
       spec = { kind: "local", shell: shell.trim() || null, cwd: null };
     } else if (kind === "ssh") {
-      const auth: SshAuth =
-        method === "key"
-          ? { method: "key", path: keyPath.trim() }
-          : { method };
+      let auth: SshAuth;
+      if (method === "key") {
+        auth = { method: "key", path: keyPath.trim() };
+      } else if (method === "agent_socket") {
+        auth = { method: "agent_socket", socket_path: socketPath.trim() };
+      } else {
+        auth = { method };
+      }
       let jumpSpec: TransportSpec | null = null;
       if (jumpHostId) {
         const found = availableJumpProfiles.find(
@@ -242,16 +251,30 @@ export function ConnectDialog({
         {kind === "ssh" && (
           <>
             <div className="seg small">
-              {(["agent", "key", "password"] as const).map((m) => (
+              {(["agent", "agent_socket", "key", "password"] as const).map((m) => (
                 <button
                   key={m}
                   className={method === m ? "on" : ""}
                   onClick={() => setMethod(m)}
                 >
-                  {m}
+                  {m === "agent_socket" ? "1Password / Socket" : m}
                 </button>
               ))}
             </div>
+            {method === "agent_socket" && (
+              <label>
+                Agent Socket Path (1Password, YubiKey, GPG)
+                <input
+                  {...verbatim}
+                  value={socketPath}
+                  placeholder="~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+                  onChange={(ev) => setSocketPath(ev.target.value)}
+                />
+                <span className="hint">
+                  Supports 1Password SSH Agent socket, YubiKey/GPG agent (~/.gnupg/S.gpg-agent.ssh), or custom sockets.
+                </span>
+              </label>
+            )}
             {method === "key" && (
               <label>
                 Private key

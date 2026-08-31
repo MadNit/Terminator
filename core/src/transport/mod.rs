@@ -29,6 +29,11 @@ pub enum SshAuth {
     Key {
         path: String,
     },
+    /// Custom SSH agent socket (e.g. 1Password SSH agent, YubiKey/GPG agent, or specific path)
+    #[serde(rename = "agent_socket")]
+    AgentSocket {
+        socket_path: String,
+    },
 }
 
 /// Where a session's bytes come from.

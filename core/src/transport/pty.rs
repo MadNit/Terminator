@@ -139,6 +139,29 @@ impl PtyTransport {
             _shell_init: shell_init,
         })
     }
+
+    pub async fn exec_local(command: &str, cwd: Option<&str>) -> Result<(i32, String, String)> {
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = tokio::process::Command::new("cmd");
+            c.args(["/C", command]);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = tokio::process::Command::new("sh");
+            c.args(["-c", command]);
+            c
+        };
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        let output = cmd.output().await?;
+        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        Ok((exit_code, stdout, stderr))
+    }
 }
 
 fn dirs_home() -> Option<String> {
