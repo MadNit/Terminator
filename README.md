@@ -75,7 +75,8 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Responsive Viewport & Dynamic Resize**: Viewport dynamically adapts to client window dimensions and reports resolution changes to the remote desktop server.
 - **Accurate Scancode Input**: Translates modern web keyboard and mouse events directly into native Windows scancodes and mouse motion packets.
 
-### SFTP Remote File Browser Drawer
+### Direct Terminal File Transfer & SFTP Drawer
+- **Direct Terminal Drag & Drop Upload**: Drag any file directly from Finder / File Explorer onto an active SSH terminal pane to trigger an immediate, high-speed SFTP streaming upload with live progress toast and terminal notification.
 - **Remote Host File Drawer (⌘J / Ctrl+J)**: Integrated slide-out file browser docked to the active SSH session tab.
 - **Desktop Drag & Drop**: Drop files directly from Finder / File Explorer onto the remote directory drawer to trigger streaming SFTP uploads.
 - **Clipboard Integration**: Copy files in your OS file manager and paste (⌘V / Ctrl+V) directly into the remote drawer.
