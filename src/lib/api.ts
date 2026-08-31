@@ -167,6 +167,56 @@ export const logFrontend = (level: "info" | "warn" | "error", message: string) =
 export const hasSecret = (key: string) => invoke<boolean>("has_secret", { key });
 
 // ---------------------------------------------------------------------------
+// SSH Port Forwarding & Tunnels
+// ---------------------------------------------------------------------------
+
+export type TunnelKind = "local" | "remote" | "dynamic";
+
+export type TunnelConfig = {
+  id: string;
+  name: string;
+  kind: TunnelKind;
+  ssh_spec: TransportSpec;
+  local_addr: string;
+  local_port: number;
+  target_host: string;
+  target_port: number;
+};
+
+export type TunnelStatus = {
+  id: string;
+  active: boolean;
+  error?: string | null;
+  bytes_rx: number;
+  bytes_tx: number;
+  active_connections: number;
+};
+
+export const listTunnels = () => invoke<TunnelConfig[]>("list_tunnels");
+
+export const saveTunnel = (config: TunnelConfig) =>
+  invoke<void>("save_tunnel", { config });
+
+export const deleteTunnel = (id: string) =>
+  invoke<void>("delete_tunnel", { id });
+
+export const activeTunnels = () => invoke<TunnelStatus[]>("active_tunnels");
+
+export const startTunnel = (
+  config: TunnelConfig,
+  secretRef?: string,
+  password?: string,
+) =>
+  invoke<TunnelStatus>("start_tunnel", {
+    config,
+    secretRef: secretRef ?? null,
+    password: password ?? null,
+  });
+
+export const stopTunnel = (id: string) =>
+  invoke<void>("stop_tunnel", { id });
+
+// ---------------------------------------------------------------------------
 // File browser
 // ---------------------------------------------------------------------------
 

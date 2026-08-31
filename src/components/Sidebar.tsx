@@ -79,6 +79,7 @@ export function Sidebar({
   onDisconnect,
   onDelete,
   onNew,
+  onOpenTunnels,
   busy,
 }: {
   profiles: Profile[];
@@ -91,6 +92,7 @@ export function Sidebar({
   onDisconnect: (p: Profile) => void;
   onDelete: (p: Profile) => void;
   onNew: () => void;
+  onOpenTunnels?: () => void;
   busy: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<Set<Kind>>(new Set());
@@ -229,6 +231,23 @@ export function Sidebar({
           );
         })}
       </div>
+
+      {onOpenTunnels && (
+        <div className="side-foot">
+          <button
+            className="side-foot-btn"
+            onClick={onOpenTunnels}
+            title="Open SSH Port Forwarding & Tunnels Manager"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <circle cx="4" cy="8" r="2.5" />
+              <circle cx="12" cy="8" r="2.5" />
+              <path d="M6.5 8h3" strokeDasharray="1 1" />
+            </svg>
+            <span>SSH Port Tunnels</span>
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

@@ -9,6 +9,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+#[cfg(feature = "ssh")]
+use crate::tunnels::TunnelConfig;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -56,6 +59,14 @@ impl Store {
             -- Full-text search across everything ever logged.
             CREATE VIRTUAL TABLE IF NOT EXISTS command_fts
                 USING fts5(command, content='commands', content_rowid='id');
+
+            -- SSH port forwarding tunnels
+            CREATE TABLE IF NOT EXISTS tunnels (
+                id       TEXT PRIMARY KEY,
+                name     TEXT NOT NULL,
+                config   TEXT NOT NULL,
+                created  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
             "#,
         )?;
         Ok(Self {
@@ -173,6 +184,41 @@ impl Store {
             .query_map(params![query, limit], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    #[cfg(feature = "ssh")]
+    pub fn save_tunnel(&self, config: &TunnelConfig) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        let config_json = serde_json::to_string(config)?;
+        c.execute(
+            "INSERT INTO tunnels (id, name, config) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, config = excluded.config",
+            params![config.id, config.name, config_json],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(feature = "ssh")]
+    pub fn list_tunnels(&self) -> Result<Vec<TunnelConfig>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare("SELECT config FROM tunnels ORDER BY name")?;
+        let rows = stmt
+            .query_map([], |r| {
+                let config_str: String = r.get(0)?;
+                let config: TunnelConfig = serde_json::from_str(&config_str).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+                })?;
+                Ok(config)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    #[cfg(feature = "ssh")]
+    pub fn delete_tunnel(&self, id: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute("DELETE FROM tunnels WHERE id = ?1", params![id])?;
+        Ok(())
     }
 }
 

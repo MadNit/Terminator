@@ -14,10 +14,14 @@ pub mod session;
 pub mod shell_init;
 pub mod store;
 pub mod tap;
+#[cfg(feature = "ssh")]
+pub mod tunnels;
 pub mod transport;
 pub mod vault;
 
 pub use session::{LogPaths, SessionManager};
+#[cfg(feature = "ssh")]
+pub use tunnels::{TunnelConfig, TunnelKind, TunnelManager, TunnelStatus};
 pub use transport::TransportSpec;
 
 /// The shell-integration snippet that enables per-command tracking.

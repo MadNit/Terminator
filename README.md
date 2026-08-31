@@ -59,9 +59,14 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Saved Connection Profiles**: Persist SSH, RDP, and local terminal profiles with custom arguments, working directories, and host configurations in a local SQLite database (`rusqlite`).
 - **Live Reconnect & Resilient Tabs**: Reconnect disconnected sessions in place without losing tab layout or credential mappings.
 
-### SSH Remote Access
+### SSH Remote Access & Tunneling
 - **Full-featured SSH Client**: Built directly on asynchronous Rust (`russh` and Tokio).
 - **Flexible Authentication**: Supports password authentication, private keys (RSA, Ed25519, ECDSA), and native OpenSSH `ssh-agent` forwarding/querying.
+- **SSH Port Forwarding & Tunnels Manager**:
+  - **Local Port Forwarding (`-L`)**: Forward local client ports to remote server ports through secure SSH channels.
+  - **Dynamic SOCKS5 Proxy (`-D`)**: Run a local SOCKS5 proxy server routed directly through remote SSH sessions for web browsers and application proxying.
+  - **Remote Port Forwarding (`-R`)**: Expose local services and web servers through remote SSH server ports.
+  - **Live Monitoring & Metrics**: View active connections, live upload/download transfer rates (`bytes_tx`, `bytes_rx`), and one-click start/stop controls.
 - **Non-blocking Concurrency**: High-throughput multiplexed I/O channels for terminal interactive sessions and SFTP subsystems concurrently.
 
 ### RDP Remote Desktop

@@ -30,7 +30,7 @@ pub enum HostKeyPolicy {
     Strict,
 }
 
-struct Client {
+pub struct Client {
     host: String,
     port: u16,
     policy: HostKeyPolicy,
@@ -126,6 +126,9 @@ pub struct SshCredentials {
 }
 
 impl SshTransport {
+    pub fn session_handle(&self) -> Arc<Handle<Client>> {
+        self.session.clone()
+    }
     pub async fn connect(
         spec: &TransportSpec,
         cols: u16,

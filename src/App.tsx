@@ -8,6 +8,7 @@ import { ProfileView } from "./components/ProfileView";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { AppHeader } from "./components/AppHeader";
 import { SessionHistoryModal } from "./components/SessionHistoryModal";
+import { TunnelManagerModal } from "./components/TunnelManagerModal";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
 import { connectBlockedReason, describeTarget } from "./lib/transport";
@@ -29,6 +30,7 @@ import {
   writeSession,
 } from "./lib/api";
 import "./App.css";
+import "./tunnel.css";
 
 interface Tab {
   key: number;
@@ -97,6 +99,7 @@ export default function App() {
   // File drawer, persisted like the sidebar. Closed by default: it is a tool
   // you reach for, not something that should eat width on first launch.
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [tunnelsOpen, setTunnelsOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(
     () => localStorage.getItem("filesOpen") === "1",
   );
@@ -424,6 +427,7 @@ export default function App() {
         filesOpen={filesOpen}
         onToggleFiles={() => setFilesOpen((v) => !v)}
         onOpenHistory={() => setHistoryOpen(true)}
+        onOpenTunnels={() => setTunnelsOpen(true)}
         splitLayout={splitLayout}
         onSplitLayout={setSplitLayout}
         broadcast={broadcast}
@@ -451,6 +455,7 @@ export default function App() {
           onDisconnect={disconnectProfile}
           onDelete={(p) => setConfirmDelete(p)}
           onNew={() => setDialog(true)}
+          onOpenTunnels={() => setTunnelsOpen(true)}
           busy={busy}
         />
 
@@ -742,6 +747,10 @@ export default function App() {
 
       {historyOpen && (
         <SessionHistoryModal onClose={() => setHistoryOpen(false)} />
+      )}
+
+      {tunnelsOpen && (
+        <TunnelManagerModal onClose={() => setTunnelsOpen(false)} />
       )}
     </div>
   );

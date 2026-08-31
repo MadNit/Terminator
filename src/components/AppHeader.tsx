@@ -17,6 +17,7 @@ export function AppHeader({
   filesOpen,
   onToggleFiles,
   onOpenHistory,
+  onOpenTunnels,
   splitLayout,
   onSplitLayout,
   broadcast,
@@ -31,6 +32,7 @@ export function AppHeader({
   filesOpen: boolean;
   onToggleFiles: () => void;
   onOpenHistory?: () => void;
+  onOpenTunnels?: () => void;
   splitLayout?: "1x1" | "1x2" | "2x1" | "2x2";
   onSplitLayout?: (layout: "1x1" | "1x2" | "2x1" | "2x2") => void;
   broadcast?: boolean;
@@ -153,6 +155,9 @@ export function AppHeader({
         </button>
         <button className="navlink" onClick={onOpenHistory} title="Session recordings & command logs (OSC 133)">
           Recordings & Logs
+        </button>
+        <button className="navlink prominent" onClick={onOpenTunnels} title="SSH Port Forwarding & Tunnel Manager (-L, -R, -D)">
+          ⚡ Port Tunnels
         </button>
         {/* Mirror of the sidebar glyph, flipped so the rail sits on the right
             and the two toggles read as a matched pair. */}

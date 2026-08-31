@@ -15,6 +15,7 @@ use terminator_core::{
     session::SessionManager,
     store::Store,
     TransportSpec,
+    TunnelConfig, TunnelManager, TunnelStatus,
 };
 use uuid::Uuid;
 
@@ -36,6 +37,7 @@ struct AppState {
     store: Store,
     /// Arc so blocking keychain work can be moved onto a blocking thread.
     secrets: Arc<Secrets>,
+    tunnels: TunnelManager,
 }
 
 /// Run a blocking secret-store operation off the async runtime.
@@ -425,6 +427,61 @@ async fn secrets_backend(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 async fn shell_integration_snippet() -> Result<String, String> {
     Ok(terminator_core::OSC133_BASH_ZSH.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// SSH Port Forwarding & Tunnels
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn list_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelConfig>, String> {
+    state.store.list_tunnels().map_err(e)
+}
+
+#[tauri::command]
+async fn save_tunnel(state: State<'_, AppState>, config: TunnelConfig) -> Result<(), String> {
+    state.store.save_tunnel(&config).map_err(e)
+}
+
+#[tauri::command]
+async fn delete_tunnel(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.tunnels.stop_tunnel(&id).await.ok();
+    state.store.delete_tunnel(&id).map_err(e)
+}
+
+#[tauri::command]
+async fn active_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelStatus>, String> {
+    Ok(state.tunnels.list_active().await)
+}
+
+#[tauri::command]
+async fn start_tunnel(
+    state: State<'_, AppState>,
+    config: TunnelConfig,
+    secret_ref: Option<String>,
+    password: Option<String>,
+) -> Result<TunnelStatus, String> {
+    let creds = match (&config.ssh_spec, password, secret_ref) {
+        (TransportSpec::Ssh { .. }, Some(pw), _) => terminator_core::transport::ssh::SshCredentials {
+            secret: Some(pw),
+            key_passphrase: None,
+        },
+        (TransportSpec::Ssh { .. }, None, Some(key)) => {
+            let secret = blocking_secrets(&state.secrets, move |s| s.get(&key)).await?;
+            terminator_core::transport::ssh::SshCredentials {
+                secret,
+                key_passphrase: None,
+            }
+        }
+        _ => terminator_core::transport::ssh::SshCredentials::default(),
+    };
+
+    state.tunnels.start_tunnel(config, creds).await.map_err(e)
+}
+
+#[tauri::command]
+async fn stop_tunnel(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.tunnels.stop_tunnel(&id).await.map_err(e)
 }
 
 // ---------------------------------------------------------------------------
@@ -907,11 +964,13 @@ pub fn run() {
             clear_staging(app.handle());
 
             let store = Store::open(&data_dir.join("terminator.db"))?;
+            let known_hosts = data_dir.join("known_hosts");
             let state = AppState {
                 sessions: SessionManager::new(data_dir.join("logs")).with_store(store.clone()),
                 rdp: RdpManager::new(),
                 store,
                 secrets: Arc::new(Secrets::new(data_dir.join("secrets"))),
+                tunnels: TunnelManager::new(known_hosts),
             };
             tracing::info!("data dir: {}", data_dir.display());
             warn_if_dev_server_down();
@@ -944,6 +1003,12 @@ pub fn run() {
             lock_vault,
             change_vault_passphrase,
             shell_integration_snippet,
+            list_tunnels,
+            save_tunnel,
+            delete_tunnel,
+            active_tunnels,
+            start_tunnel,
+            stop_tunnel,
             open_rdp,
             rdp_input,
             rdp_resize,

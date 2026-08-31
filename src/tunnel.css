@@ -1,0 +1,290 @@
+/* Tunnel Manager Styles */
+.tunnel-manager-modal {
+  width: 780px;
+  max-width: 90vw;
+  height: 560px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  background: var(--ink-850);
+}
+
+.tunnel-modal-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--ink-900);
+}
+
+.tunnel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.tunnel-count {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.tunnels-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+.tunnels-empty {
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.tunnels-empty-hint {
+  font-size: 12px;
+  margin-top: 8px;
+  color: var(--dim);
+  max-width: 420px;
+}
+
+.tunnel-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-650);
+  border-radius: var(--radius);
+  transition: border-color 0.15s ease;
+}
+
+.tunnel-item.active {
+  border-color: var(--lime);
+  background: rgba(190, 242, 100, 0.03);
+}
+
+.tunnel-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tunnel-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tunnel-badge {
+  font-size: 10px;
+  font-family: var(--mono);
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.tunnel-badge.local {
+  background: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(96, 165, 250, 0.3);
+}
+
+.tunnel-badge.dynamic {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.tunnel-badge.remote {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.tunnel-name {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.tunnel-via {
+  font-size: 11px;
+  color: var(--dim);
+  font-family: var(--mono);
+}
+
+.tunnel-live-dot {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lime);
+  margin-left: 4px;
+}
+
+.tunnel-mapping {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tunnel-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  margin-top: 2px;
+}
+
+.tunnel-error {
+  color: var(--danger);
+}
+
+.tunnel-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tunnel-btn {
+  appearance: none;
+  border: 1px solid var(--ink-600);
+  background: var(--ink-700);
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tunnel-btn:hover:not(:disabled) {
+  background: var(--ink-650);
+}
+
+.tunnel-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tunnel-btn.start {
+  background: rgba(190, 242, 100, 0.15);
+  border-color: rgba(190, 242, 100, 0.4);
+  color: var(--lime);
+  font-weight: 500;
+}
+
+.tunnel-btn.start:hover:not(:disabled) {
+  background: rgba(190, 242, 100, 0.25);
+}
+
+.tunnel-btn.stop {
+  background: rgba(244, 63, 94, 0.15);
+  border-color: rgba(244, 63, 94, 0.4);
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.tunnel-btn.stop:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.25);
+}
+
+/* Overlay Edit Form */
+.tunnel-edit-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.88);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 10;
+}
+
+.tunnel-edit-form {
+  width: 480px;
+  max-width: 100%;
+  background: var(--ink-850);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+}
+
+.tunnel-edit-form h3 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.tunnel-edit-form select {
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.tunnel-type-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.type-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-700);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.type-option.selected {
+  border-color: var(--lime);
+  background: rgba(190, 242, 100, 0.05);
+}
+
+.type-option strong {
+  display: block;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.type-option small {
+  display: block;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+
+.form-row {
+  display: flex;
+  gap: 10px;
+}
+
+.flex-1 {
+  flex: 1;
+}
