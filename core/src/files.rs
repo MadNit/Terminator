@@ -76,6 +76,275 @@ fn is_hidden(name: &str) -> bool {
 // Local
 // ---------------------------------------------------------------------------
 
+pub const IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    ".next",
+    "dist",
+    "build",
+    ".cargo",
+    ".vscode",
+    ".idea",
+    ".svn",
+    ".hg",
+    "__pycache__",
+    ".cache",
+];
+
+/// Match information inside a single line of a file.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchMatch {
+    pub line_number: usize,
+    pub line_content: String,
+    pub match_start: usize,
+    pub match_end: usize,
+}
+
+/// Search results for a single file.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileSearchResult {
+    pub path: String,
+    pub relative_path: String,
+    pub matches: Vec<SearchMatch>,
+}
+
+/// Query parameters for full-text directory search.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchOptions {
+    pub query: String,
+    pub case_sensitive: bool,
+    pub is_regex: bool,
+    pub whole_word: bool,
+    pub include_pattern: Option<String>,
+    pub max_results: Option<usize>,
+    pub max_depth: Option<usize>,
+}
+
+pub fn matches_pattern(filename: &str, pattern: Option<&str>) -> bool {
+    let Some(pattern) = pattern else { return true };
+    let pattern = pattern.trim();
+    if pattern.is_empty() || pattern == "*" {
+        return true;
+    }
+    for part in pattern.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if glob_match(part, filename) {
+            return true;
+        }
+    }
+    false
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p_lower = pattern.to_lowercase();
+    let t_lower = text.to_lowercase();
+
+    if let Some(ext) = p_lower.strip_prefix("*.") {
+        return t_lower.ends_with(&format!(".{ext}")) || t_lower == ext;
+    }
+    if let Some(prefix) = p_lower.strip_suffix('*') {
+        return t_lower.starts_with(prefix);
+    }
+    if p_lower.starts_with('*') && p_lower.ends_with('*') && p_lower.len() > 2 {
+        let sub = &p_lower[1..p_lower.len() - 1];
+        return t_lower.contains(sub);
+    }
+    t_lower == p_lower || t_lower.contains(&p_lower)
+}
+
+pub struct Matcher {
+    regex: Option<regex::Regex>,
+    plain: String,
+    case_sensitive: bool,
+}
+
+impl Matcher {
+    pub fn new(options: &SearchOptions) -> Result<Self> {
+        let query = &options.query;
+        if options.is_regex {
+            let re = regex::RegexBuilder::new(query)
+                .case_insensitive(!options.case_sensitive)
+                .build()?;
+            Ok(Self {
+                regex: Some(re),
+                plain: query.clone(),
+                case_sensitive: options.case_sensitive,
+            })
+        } else if options.whole_word {
+            let escaped = regex::escape(query);
+            let pattern = format!(r"\b{}\b", escaped);
+            let re = regex::RegexBuilder::new(&pattern)
+                .case_insensitive(!options.case_sensitive)
+                .build()?;
+            Ok(Self {
+                regex: Some(re),
+                plain: query.clone(),
+                case_sensitive: options.case_sensitive,
+            })
+        } else {
+            Ok(Self {
+                regex: None,
+                plain: if options.case_sensitive {
+                    query.clone()
+                } else {
+                    query.to_lowercase()
+                },
+                case_sensitive: options.case_sensitive,
+            })
+        }
+    }
+
+    pub fn find_matches_in_line(&self, line: &str, line_num: usize) -> Vec<SearchMatch> {
+        let mut matches = Vec::new();
+        if let Some(re) = &self.regex {
+            for m in re.find_iter(line) {
+                matches.push(SearchMatch {
+                    line_number: line_num,
+                    line_content: line.to_string(),
+                    match_start: m.start(),
+                    match_end: m.end(),
+                });
+            }
+        } else if !self.plain.is_empty() {
+            if self.case_sensitive {
+                let mut start = 0;
+                while let Some(pos) = line[start..].find(&self.plain) {
+                    let match_start = start + pos;
+                    let match_end = match_start + self.plain.len();
+                    matches.push(SearchMatch {
+                        line_number: line_num,
+                        line_content: line.to_string(),
+                        match_start,
+                        match_end,
+                    });
+                    start = match_end;
+                    if start >= line.len() {
+                        break;
+                    }
+                }
+            } else {
+                let line_lower = line.to_lowercase();
+                let mut start = 0;
+                while let Some(pos) = line_lower[start..].find(&self.plain) {
+                    let match_start = start + pos;
+                    let match_end = match_start + self.plain.len();
+                    matches.push(SearchMatch {
+                        line_number: line_num,
+                        line_content: line.to_string(),
+                        match_start,
+                        match_end,
+                    });
+                    start = match_end;
+                    if start >= line_lower.len() {
+                        break;
+                    }
+                }
+            }
+        }
+        matches
+    }
+}
+
+/// Search a directory tree for text matching the given query options.
+pub fn search_local(root: &Path, options: &SearchOptions) -> Result<Vec<FileSearchResult>> {
+    let matcher = Matcher::new(options)?;
+    let mut results = Vec::new();
+    let max_results = options.max_results.unwrap_or(500);
+    let max_depth = options.max_depth.unwrap_or(12);
+    let mut total_matches = 0;
+
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut stack = vec![(canonical_root.clone(), 0)];
+
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > max_depth {
+            continue;
+        }
+
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+
+        for entry in read_dir {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+
+            if file_type.is_dir() {
+                if IGNORED_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                stack.push((path, depth + 1));
+            } else if file_type.is_file() {
+                if !matches_pattern(&name, options.include_pattern.as_deref()) {
+                    continue;
+                }
+
+                let Ok(meta) = entry.metadata() else { continue };
+                if meta.len() == 0 || meta.len() > 5 * 1024 * 1024 {
+                    continue;
+                }
+
+                if let Ok(file_matches) = search_file_lines(&path, &matcher, max_results.saturating_sub(total_matches)) {
+                    if !file_matches.is_empty() {
+                        total_matches += file_matches.len();
+                        let rel_path = path
+                            .strip_prefix(&canonical_root)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| name.clone());
+
+                        results.push(FileSearchResult {
+                            path: path.to_string_lossy().to_string(),
+                            relative_path: if rel_path.is_empty() { name } else { rel_path },
+                            matches: file_matches,
+                        });
+
+                        if total_matches >= max_results {
+                            return Ok(results);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+fn search_file_lines(path: &Path, matcher: &Matcher, max_file_matches: usize) -> Result<Vec<SearchMatch>> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    let buffer = reader.fill_buf()?;
+    if buffer.contains(&0) {
+        return Ok(Vec::new());
+    }
+
+    let mut matches = Vec::new();
+    let mut line = String::new();
+    let mut line_num = 1;
+
+    while reader.read_line(&mut line)? > 0 {
+        let trimmed_line = line.trim_end_matches(['\r', '\n']);
+        let line_matches = matcher.find_matches_in_line(trimmed_line, line_num);
+        for m in line_matches {
+            matches.push(m);
+            if matches.len() >= max_file_matches {
+                return Ok(matches);
+            }
+        }
+        line.clear();
+        line_num += 1;
+    }
+
+    Ok(matches)
+}
+
 /// Where a local pane should open.
 pub fn local_home() -> PathBuf {
     dirs_home().unwrap_or_else(|| PathBuf::from("/"))
@@ -209,6 +478,8 @@ pub trait RemoteFs: Send + Sync {
     async fn read_text(&self, path: &str, max_bytes: usize) -> Result<String>;
     /// Write text directly to remote file.
     async fn write_text(&self, path: &str, content: &str) -> Result<()>;
+    /// Search full text in files starting from `root_path`.
+    async fn search(&self, root_path: &str, options: &SearchOptions) -> Result<Vec<FileSearchResult>>;
 }
 
 /// Join a POSIX path, for the remote side.
@@ -357,5 +628,64 @@ mod tests {
         write_local_text(&file_path, content).unwrap();
         let read_back = read_local_text(&file_path, 1024 * 1024).unwrap();
         assert_eq!(read_back, content);
+    }
+
+    #[test]
+    fn local_search_finds_matches_with_line_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src").join("main.rs"),
+            "fn main() {\n    println!(\"hello world\");\n    let x = 42;\n    println!(\"done\");\n}",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("README.md"),
+            "# Welcome\nThis is a hello test file\n",
+        )
+        .unwrap();
+
+        let options = SearchOptions {
+            query: "hello".to_string(),
+            case_sensitive: false,
+            is_regex: false,
+            whole_word: false,
+            include_pattern: None,
+            max_results: Some(100),
+            max_depth: Some(5),
+        };
+
+        let results = search_local(root, &options).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let main_rs = results.iter().find(|r| r.relative_path.contains("main.rs")).unwrap();
+        assert_eq!(main_rs.matches.len(), 1);
+        assert_eq!(main_rs.matches[0].line_number, 2);
+        assert!(main_rs.matches[0].line_content.contains("println!(\"hello world\");"));
+    }
+
+    #[test]
+    fn local_search_respects_include_pattern_and_whole_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("test.ts"), "const foo = 1;\nconst foobar = 2;\n").unwrap();
+        std::fs::write(root.join("test.py"), "foo = 1\nfoobar = 2\n").unwrap();
+
+        let options = SearchOptions {
+            query: "foo".to_string(),
+            case_sensitive: true,
+            is_regex: false,
+            whole_word: true,
+            include_pattern: Some("*.ts".to_string()),
+            max_results: Some(50),
+            max_depth: Some(5),
+        };
+
+        let results = search_local(root, &options).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].relative_path, "test.ts");
+        assert_eq!(results[0].matches.len(), 1);
+        assert_eq!(results[0].matches[0].line_number, 1);
     }
 }

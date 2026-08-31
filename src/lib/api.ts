@@ -343,6 +343,35 @@ export const readLocalTextFile = (path: string) =>
 export const writeLocalTextFile = (path: string, content: string) =>
   invoke<void>("write_local_text_file", { path, content });
 
+export type SearchMatch = {
+  line_number: number;
+  line_content: string;
+  match_start: number;
+  match_end: number;
+};
+
+export type FileSearchResult = {
+  path: string;
+  relative_path: string;
+  matches: SearchMatch[];
+};
+
+export type SearchOptions = {
+  query: string;
+  case_sensitive: boolean;
+  is_regex: boolean;
+  whole_word: boolean;
+  include_pattern?: string | null;
+  max_results?: number | null;
+  max_depth?: number | null;
+};
+
+export const searchLocalDir = (path: string, options: SearchOptions) =>
+  invoke<FileSearchResult[]>("search_local_dir", { path, options });
+
+export const searchRemoteDir = (id: string, path: string, options: SearchOptions) =>
+  invoke<FileSearchResult[]>("search_remote_dir", { id, path, options });
+
 export function uploadFile(
   id: string,
   local: string,

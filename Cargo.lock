@@ -6577,6 +6577,7 @@ dependencies = [
  "ironrdp-tokio",
  "keyring",
  "portable-pty",
+ "regex",
  "rusqlite",
  "russh",
  "russh-sftp",

@@ -13,8 +13,13 @@ import {
   remoteMkdir,
   remoteRemove,
   posixJoin,
+  searchRemoteDir,
+  searchLocalDir,
   type FileEntry,
   type Listing,
+  type FileSearchResult,
+  type SearchMatch,
+  type SearchOptions,
 } from "../lib/api";
 import "../editor.css";
 
@@ -249,6 +254,39 @@ const SUPPORTED_LANGUAGES = [
   { id: "lua", label: "Lua (.lua)" },
 ];
 
+function renderMatchSnippet(match: SearchMatch) {
+  const line = match.line_content;
+  const start = Math.max(0, match.match_start);
+  const end = Math.min(line.length, match.match_end);
+
+  let displayStart = 0;
+  let prefix = "";
+  if (start > 35) {
+    displayStart = start - 15;
+    prefix = "...";
+  }
+  let displayEnd = line.length;
+  let suffix = "";
+  if (line.length - end > 45) {
+    displayEnd = end + 30;
+    suffix = "...";
+  }
+
+  const before = line.slice(displayStart, start);
+  const matched = line.slice(start, end);
+  const after = line.slice(end, displayEnd);
+
+  return (
+    <span className="editor-match-snippet">
+      {prefix}
+      {before}
+      <mark className="editor-match-highlight">{matched}</mark>
+      {after}
+      {suffix}
+    </span>
+  );
+}
+
 export function RemoteEditorModal({
   open,
   initialFile,
@@ -267,6 +305,9 @@ export function RemoteEditorModal({
   const [fullscreen, setFullscreen] = useState<boolean>(false);
   const [pathInput, setPathInput] = useState<string>("");
 
+  // Sidebar View Tab: "explorer" | "search"
+  const [sidebarTab, setSidebarTab] = useState<"explorer" | "search">("explorer");
+
   // Project Explorer Sidebar State
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [explorerPath, setExplorerPath] = useState<string>("");
@@ -278,6 +319,19 @@ export function RemoteEditorModal({
   const [showHidden, setShowHidden] = useState<boolean>(true);
   const [newItem, setNewItem] = useState<{ type: "file" | "dir" } | null>(null);
   const [newItemName, setNewItemName] = useState<string>("");
+
+  // Global Search State
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState<boolean>(false);
+  const [searchRegex, setSearchRegex] = useState<boolean>(false);
+  const [searchWholeWord, setSearchWholeWord] = useState<boolean>(false);
+  const [searchIncludePattern, setSearchIncludePattern] = useState<string>("");
+  const [searchTargetDir, setSearchTargetDir] = useState<string>("");
+  const [searchResults, setSearchResults] = useState<FileSearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState<boolean>(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchedOnce, setSearchedOnce] = useState<boolean>(false);
+  const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({});
 
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
 
@@ -675,6 +729,93 @@ export function RemoteEditorModal({
     editorRef.current.getAction("editor.action.formatDocument")?.run();
   };
 
+  const jumpToPosition = useCallback((line: number, col: number = 1) => {
+    if (!editorRef.current) return;
+    editorRef.current.revealLineInCenter(line);
+    editorRef.current.setPosition({ lineNumber: line, column: col });
+    editorRef.current.focus();
+  }, []);
+
+  const handleRunSearch = useCallback(async () => {
+    if (!searchQuery.trim()) return;
+    setSearchLoading(true);
+    setSearchError(null);
+    setSearchedOnce(true);
+
+    const rootDir = searchTargetDir.trim() || explorerPath || "/";
+
+    const options: SearchOptions = {
+      query: searchQuery.trim(),
+      case_sensitive: searchCaseSensitive,
+      is_regex: searchRegex,
+      whole_word: searchWholeWord,
+      include_pattern: searchIncludePattern.trim() || null,
+      max_results: 300,
+      max_depth: 10,
+    };
+
+    try {
+      let results: FileSearchResult[];
+      if (isLocal || !sessionId) {
+        results = await searchLocalDir(rootDir, options);
+      } else {
+        results = await searchRemoteDir(sessionId, rootDir, options);
+      }
+      setSearchResults(results);
+    } catch (err) {
+      setSearchError(String(err));
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [
+    searchQuery,
+    searchCaseSensitive,
+    searchRegex,
+    searchWholeWord,
+    searchIncludePattern,
+    searchTargetDir,
+    explorerPath,
+    isLocal,
+    sessionId,
+  ]);
+
+  const handleMatchClick = async (fileResult: FileSearchResult, match: SearchMatch) => {
+    const fileName = fileResult.path.split("/").pop() || fileResult.path;
+    await openFile({
+      path: fileResult.path,
+      name: fileName,
+      sessionId,
+      hostLabel,
+      isLocal,
+    });
+    setTimeout(() => {
+      jumpToPosition(match.line_number, match.match_start + 1);
+    }, 60);
+  };
+
+  const toggleFileCollapse = (filePath: string) => {
+    setCollapsedFiles((prev) => ({ ...prev, [filePath]: !prev[filePath] }));
+  };
+
+  // Global keyboard shortcuts (Cmd/Ctrl+Shift+F for Search, Cmd/Ctrl+Shift+E for Explorer)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (!open) return;
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "F" || e.key === "f")) {
+        e.preventDefault();
+        setSidebarOpen(true);
+        setSidebarTab("search");
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "E" || e.key === "e")) {
+        e.preventDefault();
+        setSidebarOpen(true);
+        setSidebarTab("explorer");
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [open]);
+
   // Filter and sort directory entries
   const filteredEntries = useMemo(() => {
     if (!listing) return [];
@@ -710,11 +851,32 @@ export function RemoteEditorModal({
           <div className="editor-header-left">
             <span className="editor-badge">📝 Mini-IDE</span>
             <button
-              className={`editor-btn icon-only ${sidebarOpen ? "active" : ""}`}
-              onClick={() => setSidebarOpen((v) => !v)}
-              title="Toggle Project Explorer Sidebar"
+              className={`editor-btn icon-only ${sidebarOpen && sidebarTab === "explorer" ? "active" : ""}`}
+              onClick={() => {
+                if (sidebarOpen && sidebarTab === "explorer") {
+                  setSidebarOpen(false);
+                } else {
+                  setSidebarOpen(true);
+                  setSidebarTab("explorer");
+                }
+              }}
+              title="Toggle Project Explorer Sidebar (Ctrl+Shift+E)"
             >
               🗂️ Explorer
+            </button>
+            <button
+              className={`editor-btn icon-only ${sidebarOpen && sidebarTab === "search" ? "active" : ""}`}
+              onClick={() => {
+                if (sidebarOpen && sidebarTab === "search") {
+                  setSidebarOpen(false);
+                } else {
+                  setSidebarOpen(true);
+                  setSidebarTab("search");
+                }
+              }}
+              title="Toggle Global Search in Folder (Ctrl+Shift+F)"
+            >
+              🔍 Search
             </button>
             {(activeTab?.hostLabel || hostLabel) && (
               <span className="editor-host-tag">
@@ -830,264 +992,463 @@ export function RemoteEditorModal({
 
         {/* Main Content Area (Sidebar Explorer + Editor Tabs & Body) */}
         <div className="editor-main-container">
-          {/* Project Explorer Sidebar */}
+          {/* Project Explorer & Global Search Sidebar */}
           {sidebarOpen && (
             <aside className="editor-sidebar">
-              <div className="editor-sidebar-header">
-                <span className="editor-sidebar-title">
-                  <span>📂 Project Explorer</span>
-                </span>
-                <div className="editor-sidebar-actions">
-                  <button
-                    className="editor-sidebar-action-btn"
-                    onClick={() => {
-                      setNewItem({ type: "file" });
-                      setNewItemName("");
-                    }}
-                    title="New File in Current Folder"
-                  >
-                    📄+
-                  </button>
-                  <button
-                    className="editor-sidebar-action-btn"
-                    onClick={() => {
-                      setNewItem({ type: "dir" });
-                      setNewItemName("");
-                    }}
-                    title="New Folder in Current Folder"
-                  >
-                    📁+
-                  </button>
-                  <button
-                    className="editor-sidebar-action-btn"
-                    onClick={() => void loadDirectory(explorerPath || "/")}
-                    title="Refresh Directory"
-                  >
-                    🔄
-                  </button>
-                  <button
-                    className={`editor-sidebar-action-btn ${showHidden ? "active" : ""}`}
-                    onClick={() => setShowHidden((v) => !v)}
-                    title={showHidden ? "Hide Hidden Dotfiles" : "Show Hidden Dotfiles"}
-                  >
-                    👁️
-                  </button>
-                  {listing?.parent && (
-                    <button
-                      className="editor-sidebar-action-btn"
-                      onClick={() => void loadDirectory(listing.parent!)}
-                      title="Go to Parent Folder"
-                    >
-                      ⬆️
-                    </button>
-                  )}
-                </div>
+              {/* Sidebar View Switcher Tabs */}
+              <div className="editor-sidebar-tabs">
+                <button
+                  className={`editor-sidebar-tab-btn ${sidebarTab === "explorer" ? "active" : ""}`}
+                  onClick={() => setSidebarTab("explorer")}
+                  title="Filesystem Explorer (Ctrl+Shift+E)"
+                >
+                  📁 Explorer
+                </button>
+                <button
+                  className={`editor-sidebar-tab-btn ${sidebarTab === "search" ? "active" : ""}`}
+                  onClick={() => setSidebarTab("search")}
+                  title="Global Search in Directory (Ctrl+Shift+F)"
+                >
+                  🔍 Search
+                </button>
               </div>
 
-              {/* Location Path Row */}
-              <div className="editor-sidebar-location">
-                <div className="editor-sidebar-path-row">
-                  <input
-                    className="editor-sidebar-path-input"
-                    value={explorerPathInput}
-                    onChange={(e) => setExplorerPathInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void loadDirectory(explorerPathInput);
-                    }}
-                    placeholder="/path/to/folder..."
-                  />
-                  <button
-                    className="editor-sidebar-action-btn"
-                    onClick={() => void loadDirectory(explorerPathInput)}
-                    title="Navigate to path"
-                  >
-                    ➔
-                  </button>
-                </div>
-                {/* Quick Jumps */}
-                <div className="editor-sidebar-quick-jumps">
-                  <button
-                    className="editor-quick-jump-chip"
-                    onClick={async () => {
-                      try {
-                        const h = isLocal || !sessionId ? await localHome() : await remoteHome(sessionId);
-                        void loadDirectory(h);
-                      } catch {
-                        void loadDirectory("/");
-                      }
-                    }}
-                    title="Jump to Home Directory"
-                  >
-                    ~ home
-                  </button>
-                  <button
-                    className="editor-quick-jump-chip"
-                    onClick={() => void loadDirectory("/")}
-                    title="Jump to Root /"
-                  >
-                    / root
-                  </button>
-                  <button
-                    className="editor-quick-jump-chip"
-                    onClick={() => void loadDirectory("/etc")}
-                    title="Jump to /etc"
-                  >
-                    /etc
-                  </button>
-                  <button
-                    className="editor-quick-jump-chip"
-                    onClick={() => void loadDirectory("/var/log")}
-                    title="Jump to /var/log"
-                  >
-                    /var/log
-                  </button>
-                  <button
-                    className="editor-quick-jump-chip"
-                    onClick={() => void loadDirectory("/tmp")}
-                    title="Jump to /tmp"
-                  >
-                    /tmp
-                  </button>
-                </div>
-              </div>
-
-              {/* Live Search in folder */}
-              <div className="editor-sidebar-search">
-                <input
-                  className="editor-sidebar-search-input"
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                  placeholder="Filter files in folder..."
-                />
-              </div>
-
-              {/* Inline Create Row */}
-              {newItem && (
-                <div className="editor-sidebar-new-input-box">
-                  <span style={{ fontSize: 13 }}>{newItem.type === "file" ? "📄" : "📁"}</span>
-                  <input
-                    className="editor-sidebar-new-input"
-                    autoFocus
-                    value={newItemName}
-                    onChange={(e) => setNewItemName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void handleCreateNewItem();
-                      if (e.key === "Escape") setNewItem(null);
-                    }}
-                    placeholder={`Name of new ${newItem.type}...`}
-                  />
-                  <button
-                    className="editor-sidebar-action-btn"
-                    onClick={() => void handleCreateNewItem()}
-                    title="Create"
-                  >
-                    ✓
-                  </button>
-                  <button
-                    className="editor-sidebar-action-btn"
-                    onClick={() => setNewItem(null)}
-                    title="Cancel"
-                  >
-                    ✕
-                  </button>
-                </div>
-              )}
-
-              {/* Directory Tree / List */}
-              <div className="editor-sidebar-tree">
-                {loadingDir && (
-                  <div className="editor-sidebar-loading">
-                    <div className="editor-spinner" />
-                    <span>Loading directory...</span>
-                  </div>
-                )}
-
-                {dirError && !loadingDir && (
-                  <div className="editor-sidebar-empty">
-                    <span style={{ color: "var(--danger)" }}>⚠️ {dirError}</span>
-                    <button
-                      className="editor-btn"
-                      style={{ marginTop: 6 }}
-                      onClick={() => void loadDirectory(explorerPath || "/")}
-                    >
-                      Retry
-                    </button>
-                  </div>
-                )}
-
-                {!loadingDir && !dirError && (
-                  <>
-                    {/* Up to Parent Directory item */}
-                    {listing?.parent && (
-                      <div
-                        className="editor-tree-item dir"
-                        onClick={() => void loadDirectory(listing.parent!)}
-                        title="Go to parent directory"
+              {/* View 1: Explorer Panel */}
+              {sidebarTab === "explorer" && (
+                <>
+                  <div className="editor-sidebar-header">
+                    <span className="editor-sidebar-title">
+                      <span>📂 Files</span>
+                    </span>
+                    <div className="editor-sidebar-actions">
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => {
+                          setNewItem({ type: "file" });
+                          setNewItemName("");
+                        }}
+                        title="New File in Current Folder"
                       >
-                        <div className="editor-tree-item-left">
-                          <span className="editor-tree-icon">📁</span>
-                          <span className="editor-tree-name">.. (parent)</span>
-                        </div>
+                        📄+
+                      </button>
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => {
+                          setNewItem({ type: "dir" });
+                          setNewItemName("");
+                        }}
+                        title="New Folder in Current Folder"
+                      >
+                        📁+
+                      </button>
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => void loadDirectory(explorerPath || "/")}
+                        title="Refresh Directory"
+                      >
+                        🔄
+                      </button>
+                      <button
+                        className={`editor-sidebar-action-btn ${showHidden ? "active" : ""}`}
+                        onClick={() => setShowHidden((v) => !v)}
+                        title={showHidden ? "Hide Hidden Dotfiles" : "Show Hidden Dotfiles"}
+                      >
+                        👁️
+                      </button>
+                      {listing?.parent && (
+                        <button
+                          className="editor-sidebar-action-btn"
+                          onClick={() => void loadDirectory(listing.parent!)}
+                          title="Go to Parent Folder"
+                        >
+                          ⬆️
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Location Path Row */}
+                  <div className="editor-sidebar-location">
+                    <div className="editor-sidebar-path-row">
+                      <input
+                        className="editor-sidebar-path-input"
+                        value={explorerPathInput}
+                        onChange={(e) => setExplorerPathInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void loadDirectory(explorerPathInput);
+                        }}
+                        placeholder="/path/to/folder..."
+                      />
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => void loadDirectory(explorerPathInput)}
+                        title="Navigate to path"
+                      >
+                        ➔
+                      </button>
+                    </div>
+                    {/* Quick Jumps */}
+                    <div className="editor-sidebar-quick-jumps">
+                      <button
+                        className="editor-quick-jump-chip"
+                        onClick={async () => {
+                          try {
+                            const h = isLocal || !sessionId ? await localHome() : await remoteHome(sessionId);
+                            void loadDirectory(h);
+                          } catch {
+                            void loadDirectory("/");
+                          }
+                        }}
+                        title="Jump to Home Directory"
+                      >
+                        ~ home
+                      </button>
+                      <button
+                        className="editor-quick-jump-chip"
+                        onClick={() => void loadDirectory("/")}
+                        title="Jump to Root /"
+                      >
+                        / root
+                      </button>
+                      <button
+                        className="editor-quick-jump-chip"
+                        onClick={() => void loadDirectory("/etc")}
+                        title="Jump to /etc"
+                      >
+                        /etc
+                      </button>
+                      <button
+                        className="editor-quick-jump-chip"
+                        onClick={() => void loadDirectory("/var/log")}
+                        title="Jump to /var/log"
+                      >
+                        /var/log
+                      </button>
+                      <button
+                        className="editor-quick-jump-chip"
+                        onClick={() => void loadDirectory("/tmp")}
+                        title="Jump to /tmp"
+                      >
+                        /tmp
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Live Search in folder */}
+                  <div className="editor-sidebar-search">
+                    <input
+                      className="editor-sidebar-search-input"
+                      value={searchFilter}
+                      onChange={(e) => setSearchFilter(e.target.value)}
+                      placeholder="Filter files in current folder..."
+                    />
+                  </div>
+
+                  {/* Inline Create Row */}
+                  {newItem && (
+                    <div className="editor-sidebar-new-input-box">
+                      <span style={{ fontSize: 13 }}>{newItem.type === "file" ? "📄" : "📁"}</span>
+                      <input
+                        className="editor-sidebar-new-input"
+                        autoFocus
+                        value={newItemName}
+                        onChange={(e) => setNewItemName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleCreateNewItem();
+                          if (e.key === "Escape") setNewItem(null);
+                        }}
+                        placeholder={`Name of new ${newItem.type}...`}
+                      />
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => void handleCreateNewItem()}
+                        title="Create"
+                      >
+                        ✓
+                      </button>
+                      <button
+                        className="editor-sidebar-action-btn"
+                        onClick={() => setNewItem(null)}
+                        title="Cancel"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Directory Tree / List */}
+                  <div className="editor-sidebar-tree">
+                    {loadingDir && (
+                      <div className="editor-sidebar-loading">
+                        <div className="editor-spinner" />
+                        <span>Loading directory...</span>
                       </div>
                     )}
 
-                    {filteredEntries.map((entry) => {
-                      const isDir = entry.kind === "dir";
-                      const isOpenedInActive = activeTab?.path === entry.path;
-                      return (
-                        <div
-                          key={entry.path}
-                          className={`editor-tree-item ${isDir ? "dir" : "file"} ${entry.hidden ? "hidden-file" : ""} ${isOpenedInActive ? "active" : ""}`}
-                          onClick={() => {
-                            if (isDir) {
-                              void loadDirectory(entry.path);
-                            } else {
-                              void openFile({
-                                path: entry.path,
-                                name: entry.name,
-                                sessionId,
-                                hostLabel,
-                                isLocal,
-                              });
-                            }
-                          }}
-                          title={entry.path}
+                    {dirError && !loadingDir && (
+                      <div className="editor-sidebar-empty">
+                        <span style={{ color: "var(--danger)" }}>⚠️ {dirError}</span>
+                        <button
+                          className="editor-btn"
+                          style={{ marginTop: 6 }}
+                          onClick={() => void loadDirectory(explorerPath || "/")}
                         >
-                          <div className="editor-tree-item-left">
-                            <span className="editor-tree-icon">
-                              {isDir ? "📁" : getFileIcon(entry.name)}
-                            </span>
-                            <span className="editor-tree-name">{entry.name}</span>
-                          </div>
+                          Retry
+                        </button>
+                      </div>
+                    )}
 
-                          <div className="editor-tree-item-right">
-                            {!isDir && (
-                              <span className="editor-tree-size">
-                                {formatFileSize(entry.size)}
-                              </span>
-                            )}
-                            <div className="editor-tree-actions">
-                              <button
-                                className="editor-tree-action-btn"
-                                onClick={(e) => void handleDeleteEntry(entry, e)}
-                                title={`Delete ${entry.name}`}
-                              >
-                                🗑️
-                              </button>
+                    {!loadingDir && !dirError && (
+                      <>
+                        {/* Up to Parent Directory item */}
+                        {listing?.parent && (
+                          <div
+                            className="editor-tree-item dir"
+                            onClick={() => void loadDirectory(listing.parent!)}
+                            title="Go to parent directory"
+                          >
+                            <div className="editor-tree-item-left">
+                              <span className="editor-tree-icon">📁</span>
+                              <span className="editor-tree-name">.. (parent)</span>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        )}
 
-                    {filteredEntries.length === 0 && !listing?.parent && (
-                      <div className="editor-sidebar-empty">
-                        <span>Empty folder</span>
+                        {filteredEntries.map((entry) => {
+                          const isDir = entry.kind === "dir";
+                          const isOpenedInActive = activeTab?.path === entry.path;
+                          return (
+                            <div
+                              key={entry.path}
+                              className={`editor-tree-item ${isDir ? "dir" : "file"} ${entry.hidden ? "hidden-file" : ""} ${isOpenedInActive ? "active" : ""}`}
+                              onClick={() => {
+                                if (isDir) {
+                                  void loadDirectory(entry.path);
+                                } else {
+                                  void openFile({
+                                    path: entry.path,
+                                    name: entry.name,
+                                    sessionId,
+                                    hostLabel,
+                                    isLocal,
+                                  });
+                                }
+                              }}
+                              title={entry.path}
+                            >
+                              <div className="editor-tree-item-left">
+                                <span className="editor-tree-icon">
+                                  {isDir ? "📁" : getFileIcon(entry.name)}
+                                </span>
+                                <span className="editor-tree-name">{entry.name}</span>
+                              </div>
+
+                              <div className="editor-tree-item-right">
+                                {!isDir && (
+                                  <span className="editor-tree-size">
+                                    {formatFileSize(entry.size)}
+                                  </span>
+                                )}
+                                <div className="editor-tree-actions">
+                                  <button
+                                    className="editor-tree-action-btn"
+                                    onClick={(e) => void handleDeleteEntry(entry, e)}
+                                    title={`Delete ${entry.name}`}
+                                  >
+                                    🗑️
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {filteredEntries.length === 0 && !listing?.parent && (
+                          <div className="editor-sidebar-empty">
+                            <span>Empty folder</span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* View 2: Global Directory Search Panel */}
+              {sidebarTab === "search" && (
+                <div className="editor-search-panel">
+                  <div className="editor-search-form">
+                    {/* Search Input Box */}
+                    <div className="editor-search-input-box">
+                      <input
+                        className="editor-search-text-input"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleRunSearch();
+                        }}
+                        placeholder="Search text in files..."
+                        autoFocus
+                      />
+                      <button
+                        className={`editor-search-toggle-btn ${searchCaseSensitive ? "active" : ""}`}
+                        onClick={() => setSearchCaseSensitive((v) => !v)}
+                        title="Match Case (Aa)"
+                      >
+                        Aa
+                      </button>
+                      <button
+                        className={`editor-search-toggle-btn ${searchWholeWord ? "active" : ""}`}
+                        onClick={() => setSearchWholeWord((v) => !v)}
+                        title="Match Whole Word (\b)"
+                      >
+                        \b
+                      </button>
+                      <button
+                        className={`editor-search-toggle-btn ${searchRegex ? "active" : ""}`}
+                        onClick={() => setSearchRegex((v) => !v)}
+                        title="Use Regular Expression (.*)"
+                      >
+                        .*
+                      </button>
+                    </div>
+
+                    {/* Files to Include Glob */}
+                    <div className="editor-search-options-row">
+                      <input
+                        className="editor-search-filter-input"
+                        value={searchIncludePattern}
+                        onChange={(e) => setSearchIncludePattern(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleRunSearch();
+                        }}
+                        placeholder="Include (e.g. *.py, *.rs, src/*)"
+                        title="File filter pattern"
+                      />
+                    </div>
+
+                    {/* Search Target Root Directory */}
+                    <div className="editor-search-options-row">
+                      <input
+                        className="editor-search-filter-input"
+                        value={searchTargetDir || explorerPath}
+                        onChange={(e) => setSearchTargetDir(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") void handleRunSearch();
+                        }}
+                        placeholder="Search folder (default: current)"
+                        title="Directory path to search recursively"
+                      />
+                    </div>
+
+                    {/* Search Action Buttons */}
+                    <div className="editor-search-actions-row">
+                      <button
+                        className="editor-btn primary"
+                        style={{ padding: "3px 12px", fontSize: 11 }}
+                        onClick={() => void handleRunSearch()}
+                        disabled={searchLoading || !searchQuery.trim()}
+                      >
+                        {searchLoading ? "Searching..." : "🔍 Find"}
+                      </button>
+
+                      {searchResults.length > 0 && (
+                        <button
+                          className="editor-btn"
+                          style={{ padding: "3px 8px", fontSize: 11 }}
+                          onClick={() => {
+                            setSearchResults([]);
+                            setSearchedOnce(false);
+                            setSearchError(null);
+                          }}
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Results Summary */}
+                  {searchedOnce && !searchLoading && (
+                    <div className="editor-search-results-summary">
+                      <span>
+                        {searchResults.length === 0
+                          ? "No matches found"
+                          : `${searchResults.reduce((a, b) => a + b.matches.length, 0)} results in ${searchResults.length} files`}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Results Tree */}
+                  <div className="editor-search-results-tree">
+                    {searchLoading && (
+                      <div className="editor-sidebar-loading">
+                        <div className="editor-spinner" />
+                        <span>Searching directory tree...</span>
                       </div>
                     )}
-                  </>
-                )}
-              </div>
+
+                    {searchError && (
+                      <div className="editor-sidebar-empty" style={{ color: "var(--danger)" }}>
+                        <span>⚠️ {searchError}</span>
+                      </div>
+                    )}
+
+                    {!searchLoading &&
+                      searchResults.map((fileRes) => {
+                        const isCollapsed = !!collapsedFiles[fileRes.path];
+                        const fileName = fileRes.path.split("/").pop() || fileRes.path;
+                        const icon = getFileIcon(fileName);
+
+                        return (
+                          <div key={fileRes.path} className="editor-search-file-group">
+                            <div
+                              className="editor-search-file-header"
+                              onClick={() => toggleFileCollapse(fileRes.path)}
+                              title={fileRes.path}
+                            >
+                              <div className="editor-search-file-title">
+                                <span style={{ fontSize: 10, color: "var(--dim)" }}>
+                                  {isCollapsed ? "▶" : "▼"}
+                                </span>
+                                <span>{icon}</span>
+                                <span style={{ fontWeight: 600 }}>{fileName}</span>
+                                <span className="editor-search-file-path">
+                                  {fileRes.relative_path !== fileName ? `(${fileRes.relative_path})` : ""}
+                                </span>
+                              </div>
+                              <span className="editor-search-badge">
+                                {fileRes.matches.length}
+                              </span>
+                            </div>
+
+                            {!isCollapsed &&
+                              fileRes.matches.map((match, mIdx) => (
+                                <div
+                                  key={`${fileRes.path}-${match.line_number}-${mIdx}`}
+                                  className="editor-search-match-row"
+                                  onClick={() => void handleMatchClick(fileRes, match)}
+                                  title={`Go to line ${match.line_number}`}
+                                >
+                                  <span className="editor-search-line-no">
+                                    L{match.line_number}
+                                  </span>
+                                  {renderMatchSnippet(match)}
+                                </div>
+                              ))}
+                          </div>
+                        );
+                      })}
+
+                    {!searchLoading && !searchedOnce && (
+                      <div className="editor-sidebar-empty">
+                        <span style={{ fontSize: 24, opacity: 0.5 }}>🔍</span>
+                        <span>Enter text and click Find to search folder</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </aside>
           )}
 

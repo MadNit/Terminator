@@ -927,6 +927,31 @@ async fn write_local_text_file(path: String, content: String) -> Result<(), Stri
     .map_err(e)
 }
 
+#[tauri::command]
+async fn search_remote_dir(
+    state: State<'_, AppState>,
+    id: String,
+    path: String,
+    options: terminator_core::files::SearchOptions,
+) -> Result<Vec<terminator_core::files::FileSearchResult>, String> {
+    let id = Uuid::parse_str(&id).map_err(e)?;
+    let fs = state.sessions.files(id).await.map_err(e)?;
+    fs.search(&path, &options).await.map_err(e)
+}
+
+#[tauri::command]
+async fn search_local_dir(
+    path: String,
+    options: terminator_core::files::SearchOptions,
+) -> Result<Vec<terminator_core::files::FileSearchResult>, String> {
+    tokio::task::spawn_blocking(move || {
+        terminator_core::files::search_local(std::path::Path::new(&path), &options)
+    })
+    .await
+    .map_err(e)?
+    .map_err(e)
+}
+
 /// Remote -> local.
 #[tauri::command]
 async fn download_file(
@@ -1147,6 +1172,8 @@ pub fn run() {
             write_remote_text_file,
             read_local_text_file,
             write_local_text_file,
+            search_remote_dir,
+            search_local_dir,
             log_frontend,
         ])
         .run(tauri::generate_context!())

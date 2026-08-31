@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
+regex = { workspace = true }
 
 portable-pty = { workspace = true }
 vte = { workspace = true }

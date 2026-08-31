@@ -5,7 +5,8 @@
 //! first would be an easy way to kill the app on a large file.
 
 use crate::files::{
-    posix_join, posix_parent, EntryKind, FileEntry, Listing, Progress, ProgressSink, RemoteFs,
+    matches_pattern, posix_join, posix_parent, EntryKind, FileEntry, FileSearchResult,
+    Listing, Matcher, Progress, ProgressSink, RemoteFs, SearchOptions, IGNORED_DIRS,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -210,6 +211,99 @@ impl RemoteFs for SftpFs {
         dst.flush().await?;
         dst.shutdown().await?;
         Ok(())
+    }
+
+    async fn search(&self, root_path: &str, options: &SearchOptions) -> Result<Vec<FileSearchResult>> {
+        let matcher = Matcher::new(options)?;
+        let canonical = self
+            .sftp
+            .canonicalize(root_path)
+            .await
+            .unwrap_or_else(|_| root_path.to_string());
+
+        let max_results = options.max_results.unwrap_or(300);
+        let max_depth = options.max_depth.unwrap_or(8);
+        let mut total_matches = 0;
+        let mut results = Vec::new();
+
+        let mut stack = vec![(canonical.clone(), 0)];
+
+        while let Some((dir_path, depth)) = stack.pop() {
+            if depth > max_depth {
+                continue;
+            }
+
+            let Ok(dir) = self.sftp.read_dir(dir_path.clone()).await else {
+                continue;
+            };
+
+            for item in dir {
+                let name = item.file_name();
+                if name == "." || name == ".." {
+                    continue;
+                }
+
+                let full_path = posix_join(&dir_path, &name);
+                let file_type = item.file_type();
+
+                if file_type.is_dir() {
+                    if IGNORED_DIRS.contains(&name.as_str()) {
+                        continue;
+                    }
+                    stack.push((full_path, depth + 1));
+                } else if file_type.is_file() {
+                    if !matches_pattern(&name, options.include_pattern.as_deref()) {
+                        continue;
+                    }
+
+                    let meta = item.metadata();
+                    let size = meta.size.unwrap_or(0);
+                    if size == 0 || size > 2 * 1024 * 1024 {
+                        continue;
+                    }
+
+                    if let Ok(content) = self.read_text(&full_path, 2 * 1024 * 1024).await {
+                        let mut file_matches = Vec::new();
+                        for (idx, line) in content.lines().enumerate() {
+                            let line_num = idx + 1;
+                            let found = matcher.find_matches_in_line(line, line_num);
+                            for m in found {
+                                file_matches.push(m);
+                                if file_matches.len() + total_matches >= max_results {
+                                    break;
+                                }
+                            }
+                            if file_matches.len() + total_matches >= max_results {
+                                break;
+                            }
+                        }
+
+                        if !file_matches.is_empty() {
+                            total_matches += file_matches.len();
+                            let rel_path = if full_path.starts_with(&canonical) {
+                                full_path[canonical.len()..]
+                                    .trim_start_matches('/')
+                                    .to_string()
+                            } else {
+                                name.clone()
+                            };
+
+                            results.push(FileSearchResult {
+                                path: full_path,
+                                relative_path: if rel_path.is_empty() { name } else { rel_path },
+                                matches: file_matches,
+                            });
+
+                            if total_matches >= max_results {
+                                return Ok(results);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
     }
 }
 
