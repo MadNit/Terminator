@@ -80,6 +80,7 @@ export function Sidebar({
   onDelete,
   onNew,
   onOpenTunnels,
+  onOpenSnippets,
   busy,
 }: {
   profiles: Profile[];
@@ -93,6 +94,7 @@ export function Sidebar({
   onDelete: (p: Profile) => void;
   onNew: () => void;
   onOpenTunnels?: () => void;
+  onOpenSnippets?: () => void;
   busy: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<Set<Kind>>(new Set());
@@ -232,8 +234,18 @@ export function Sidebar({
         })}
       </div>
 
-      {onOpenTunnels && (
-        <div className="side-foot">
+      <div className="side-foot" style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+        {onOpenSnippets && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenSnippets}
+            title="Open Snippets & Command Templates Library"
+          >
+            <span style={{ fontSize: "13px" }}>📝</span>
+            <span>Snippets Library</span>
+          </button>
+        )}
+        {onOpenTunnels && (
           <button
             className="side-foot-btn"
             onClick={onOpenTunnels}
@@ -246,8 +258,8 @@ export function Sidebar({
             </svg>
             <span>SSH Port Tunnels</span>
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </aside>
   );
 }

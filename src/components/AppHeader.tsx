@@ -18,6 +18,7 @@ export function AppHeader({
   onToggleFiles,
   onOpenHistory,
   onOpenTunnels,
+  onOpenSnippets,
   splitLayout,
   onSplitLayout,
   broadcast,
@@ -33,6 +34,7 @@ export function AppHeader({
   onToggleFiles: () => void;
   onOpenHistory?: () => void;
   onOpenTunnels?: () => void;
+  onOpenSnippets?: () => void;
   splitLayout?: "1x1" | "1x2" | "2x1" | "2x2";
   onSplitLayout?: (layout: "1x1" | "1x2" | "2x1" | "2x2") => void;
   broadcast?: boolean;
@@ -148,10 +150,8 @@ export function AppHeader({
       </div>
 
       <nav className="appnav">
-        {/* Placeholders: the design calls for them, but neither has a feature
-            behind it yet, so they are marked disabled rather than faked. */}
-        <button className="navlink" disabled title="Not implemented yet">
-          Bookmarks
+        <button className="navlink" onClick={onOpenSnippets} title="Command snippets library & templates (⌘P / Quick Run)">
+          📝 Snippets
         </button>
         <button className="navlink" onClick={onOpenHistory} title="Session recordings & command logs (OSC 133)">
           Recordings & Logs

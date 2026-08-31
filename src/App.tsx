@@ -9,6 +9,8 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { AppHeader } from "./components/AppHeader";
 import { SessionHistoryModal } from "./components/SessionHistoryModal";
 import { TunnelManagerModal } from "./components/TunnelManagerModal";
+import { SnippetManagerModal } from "./components/SnippetManagerModal";
+import { CommandPalette } from "./components/CommandPalette";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
 import { connectBlockedReason, describeTarget } from "./lib/transport";
@@ -31,6 +33,7 @@ import {
 } from "./lib/api";
 import "./App.css";
 import "./tunnel.css";
+import "./snippet.css";
 
 interface Tab {
   key: number;
@@ -102,6 +105,8 @@ export default function App() {
   // you reach for, not something that should eat width on first launch.
   const [historyOpen, setHistoryOpen] = useState(false);
   const [tunnelsOpen, setTunnelsOpen] = useState(false);
+  const [snippetsOpen, setSnippetsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(
     () => localStorage.getItem("filesOpen") === "1",
   );
@@ -120,9 +125,17 @@ export default function App() {
     localStorage.setItem("filesOpen", filesOpen ? "1" : "0");
   }, [filesOpen]);
 
-  // Cmd/Ctrl+B toggles, the convention in editors and other terminal apps.
+  // Global Keyboard Shortcuts (Cmd/Ctrl+B, Cmd/Ctrl+J, Cmd/Ctrl+K, Cmd/Ctrl+P)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+      if (e.key.toLowerCase() === "p" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
+        e.preventDefault();
+        setSnippetsOpen((v) => !v);
+      }
       if (e.key.toLowerCase() === "b" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         setSidebarOpen((v) => !v);
@@ -234,6 +247,47 @@ export default function App() {
       if (tab.sessionId && !tab.exited && tab.spec.kind !== "rdp") {
         void writeSession(tab.sessionId, data);
       }
+    }
+  };
+
+  /** Execute a command string in the currently active or focused terminal tab */
+  const runCommandInActiveTerminal = (command: string) => {
+    const targetKey = focusedPaneKey ?? active;
+    let targetTab = tabs.find((t) => t.key === targetKey);
+    if (!targetTab || targetTab.exited || targetTab.spec.kind === "rdp") {
+      targetTab = tabs.find((t) => !t.exited && t.spec.kind !== "rdp");
+    }
+    if (targetTab && targetTab.sessionId) {
+      // Append newline if not present
+      const cmdToSend = command.endsWith("\n") || command.endsWith("\r") ? command : command + "\n";
+      void writeSession(targetTab.sessionId, cmdToSend);
+    } else {
+      // No active terminal tab -> spawn local shell tab and schedule execution
+      const key = nextKey++;
+      setTabs((t) => [
+        ...t,
+        {
+          key,
+          title: "shell",
+          spec: localSpec(),
+          sessionId: null,
+          exited: false,
+          gen: 0,
+        },
+      ]);
+      setActive(key);
+      setSelectedId(null);
+      // Wait briefly for pty session to initialize, then write
+      setTimeout(() => {
+        setTabs((currentTabs) => {
+          const newTab = currentTabs.find((x) => x.key === key);
+          if (newTab && newTab.sessionId) {
+            const cmdToSend = command.endsWith("\n") || command.endsWith("\r") ? command : command + "\n";
+            void writeSession(newTab.sessionId, cmdToSend);
+          }
+          return currentTabs;
+        });
+      }, 350);
     }
   };
 
@@ -455,6 +509,7 @@ export default function App() {
         onToggleFiles={() => setFilesOpen((v) => !v)}
         onOpenHistory={() => setHistoryOpen(true)}
         onOpenTunnels={() => setTunnelsOpen(true)}
+        onOpenSnippets={() => setSnippetsOpen(true)}
         splitLayout={splitLayout}
         onSplitLayout={setSplitLayout}
         broadcast={broadcast}
@@ -483,6 +538,7 @@ export default function App() {
           onDelete={(p) => setConfirmDelete(p)}
           onNew={() => setDialog(true)}
           onOpenTunnels={() => setTunnelsOpen(true)}
+          onOpenSnippets={() => setSnippetsOpen(true)}
           busy={busy}
         />
 
@@ -782,6 +838,112 @@ export default function App() {
 
       {tunnelsOpen && (
         <TunnelManagerModal onClose={() => setTunnelsOpen(false)} />
+      )}
+
+      {snippetsOpen && (
+        <SnippetManagerModal
+          onClose={() => setSnippetsOpen(false)}
+          onRunSnippet={(cmd) => runCommandInActiveTerminal(cmd)}
+        />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onConnectProfile={(p) => void openProfile(p)}
+          onRunSnippet={(cmd) => runCommandInActiveTerminal(cmd)}
+          actions={[
+            {
+              id: "new-session",
+              title: "New Connection / Session",
+              subtitle: "Open connection dialog for SSH, RDP, or local shell",
+              shortcut: "⌘N",
+              icon: "➕",
+              perform: () => setDialog(true),
+            },
+            {
+              id: "new-local-shell",
+              title: "New Local Shell Tab",
+              subtitle: "Open a fresh local terminal tab",
+              shortcut: "⌘T",
+              icon: "💻",
+              perform: () => addLocalTab(),
+            },
+            {
+              id: "open-snippets",
+              title: "Open Snippets & Command Library",
+              subtitle: "Manage and run parameterized scripts and commands",
+              shortcut: "⇧⌘P",
+              icon: "📝",
+              perform: () => setSnippetsOpen(true),
+            },
+            {
+              id: "open-tunnels",
+              title: "Open SSH Port Tunnels Manager",
+              subtitle: "Configure Local (-L), Remote (-R), and Dynamic SOCKS5 (-D) tunnels",
+              icon: "⚡",
+              perform: () => setTunnelsOpen(true),
+            },
+            {
+              id: "open-recordings",
+              title: "Session Recordings & Command Logs",
+              subtitle: "Search OSC 133 command history and replay asciinema recordings",
+              icon: "📼",
+              perform: () => setHistoryOpen(true),
+            },
+            {
+              id: "toggle-broadcast",
+              title: broadcast ? "Disable Multi-Exec Broadcast Input" : "Enable Multi-Exec Broadcast Input",
+              subtitle: "Broadcast typed keystrokes across all open terminal tabs simultaneously",
+              icon: "⚡",
+              perform: () => setBroadcast((b) => !b),
+            },
+            {
+              id: "toggle-sidebar",
+              title: sidebarOpen ? "Hide Connections Sidebar" : "Show Connections Sidebar",
+              subtitle: "Toggle the left connections drawer",
+              shortcut: "⌘B",
+              icon: "📁",
+              perform: () => setSidebarOpen((v) => !v),
+            },
+            {
+              id: "toggle-files",
+              title: filesOpen ? "Hide Remote SFTP File Drawer" : "Show Remote SFTP File Drawer",
+              subtitle: "Toggle the right remote file browser drawer",
+              shortcut: "⌘J",
+              icon: "🗄️",
+              perform: () => setFilesOpen((v) => !v),
+            },
+            {
+              id: "split-1x1",
+              title: "Layout: Single Pane (1x1)",
+              subtitle: "Switch to single active terminal view",
+              icon: "🔲",
+              perform: () => setSplitLayout("1x1"),
+            },
+            {
+              id: "split-1x2",
+              title: "Layout: Split Vertical (1x2)",
+              subtitle: "Show 2 side-by-side terminal panes",
+              icon: "🔳",
+              perform: () => setSplitLayout("1x2"),
+            },
+            {
+              id: "split-2x1",
+              title: "Layout: Split Horizontal (2x1)",
+              subtitle: "Show 2 stacked horizontal terminal panes",
+              icon: "🟰",
+              perform: () => setSplitLayout("2x1"),
+            },
+            {
+              id: "split-2x2",
+              title: "Layout: Quad Grid (2x2)",
+              subtitle: "Show 4 terminal panes in a 2x2 grid",
+              icon: "🪟",
+              perform: () => setSplitLayout("2x2"),
+            },
+          ]}
+        />
       )}
     </div>
   );

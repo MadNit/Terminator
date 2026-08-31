@@ -20,6 +20,7 @@ pub mod transport;
 pub mod vault;
 
 pub use session::{LogPaths, SessionManager};
+pub use store::Snippet;
 #[cfg(feature = "ssh")]
 pub use tunnels::{TunnelConfig, TunnelKind, TunnelManager, TunnelStatus};
 pub use transport::TransportSpec;

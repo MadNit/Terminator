@@ -465,6 +465,25 @@ async fn active_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelStatus>,
     Ok(state.tunnels.list_active().await)
 }
 
+// ---------------------------------------------------------------------------
+// Snippets Library
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn list_snippets(state: State<'_, AppState>) -> Result<Vec<terminator_core::Snippet>, String> {
+    state.store.list_snippets().map_err(e)
+}
+
+#[tauri::command]
+async fn save_snippet(state: State<'_, AppState>, snippet: terminator_core::Snippet) -> Result<(), String> {
+    state.store.save_snippet(&snippet).map_err(e)
+}
+
+#[tauri::command]
+async fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.store.delete_snippet(&id).map_err(e)
+}
+
 #[tauri::command]
 async fn start_tunnel(
     state: State<'_, AppState>,
@@ -1024,6 +1043,9 @@ pub fn run() {
             active_tunnels,
             start_tunnel,
             stop_tunnel,
+            list_snippets,
+            save_snippet,
+            delete_snippet,
             open_rdp,
             rdp_input,
             rdp_resize,

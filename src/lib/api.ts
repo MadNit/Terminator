@@ -228,6 +228,27 @@ export const stopTunnel = (id: string) =>
   invoke<void>("stop_tunnel", { id });
 
 // ---------------------------------------------------------------------------
+// Snippets Library
+// ---------------------------------------------------------------------------
+
+export type Snippet = {
+  id: string;
+  title: string;
+  command: string;
+  category?: string | null;
+  description?: string | null;
+  tags: string[];
+};
+
+export const listSnippets = () => invoke<Snippet[]>("list_snippets");
+
+export const saveSnippet = (snippet: Snippet) =>
+  invoke<void>("save_snippet", { snippet });
+
+export const deleteSnippet = (id: string) =>
+  invoke<void>("delete_snippet", { id });
+
+// ---------------------------------------------------------------------------
 // File browser
 // ---------------------------------------------------------------------------
 

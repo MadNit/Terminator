@@ -82,6 +82,11 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Direct Drag Out & File Dialogs**: Drag remote files out to your desktop or use native OS Save/Upload file dialogs for large files.
 - **Path Copying**: Instant ⌘C / Ctrl+C copying of selected remote paths.
 
+### Snippets Library & Command Palette (⌘K)
+- **Parameterized Snippets Library**: Create, categorize, and organize reusable commands and multi-line scripts.
+- **Dynamic Parameter Prompts (`{{variable}}`)**: Define placeholders inside commands (e.g. `docker logs -f {{container}} --tail {{lines}}`) and receive interactive prompts to supply values before execution.
+- **Unified Command Palette (⌘K / Ctrl+K)**: Quick launcher to search across all saved connections, snippets, recordings, layout actions, and multi-exec toggles with instant keyboard execution.
+
 ### Security & Credential Management
 - **OS Native Keychain Storage**: Passwords and credentials securely stored using platform APIs (macOS Keychain via Security framework, Windows Credential Manager, Linux Secret Service / DBus).
 - **Encrypted Fallback Vault**: For headless, containerized, or non-keychain environments, Terminator includes a zero-trust encrypted vault using **Argon2id** key derivation and **XChaCha20-Poly1305** AEAD encryption.
@@ -102,6 +107,8 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 
 | Shortcut (macOS) | Shortcut (Windows/Linux) | Action |
 |---|---|---|
+| <kbd>⌘</kbd> + <kbd>K</kbd> | <kbd>Ctrl</kbd> + <kbd>K</kbd> | Open Command Palette (search profiles, snippets, & actions) |
+| <kbd>⇧</kbd> + <kbd>⌘</kbd> + <kbd>P</kbd> | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Open Snippets & Command Library Modal |
 | <kbd>⌘</kbd> + <kbd>B</kbd> | <kbd>Ctrl</kbd> + <kbd>B</kbd> | Toggle Connections Sidebar |
 | <kbd>⌘</kbd> + <kbd>J</kbd> | <kbd>Ctrl</kbd> + <kbd>J</kbd> | Toggle SFTP Remote File Browser Drawer |
 | <kbd>⌘</kbd> + <kbd>C</kbd> | <kbd>Ctrl</kbd> + <kbd>C</kbd> | Copy selected terminal text / remote file path |

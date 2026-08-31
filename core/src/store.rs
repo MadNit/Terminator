@@ -21,6 +21,16 @@ pub struct Profile {
     pub spec: serde_json::Value,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Snippet {
+    pub id: String,
+    pub title: String,
+    pub command: String,
+    pub category: Option<String>,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
@@ -66,6 +76,17 @@ impl Store {
                 name     TEXT NOT NULL,
                 config   TEXT NOT NULL,
                 created  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            );
+
+            -- Snippets library
+            CREATE TABLE IF NOT EXISTS snippets (
+                id          TEXT PRIMARY KEY,
+                title       TEXT NOT NULL,
+                command     TEXT NOT NULL,
+                category    TEXT,
+                description TEXT,
+                tags        TEXT NOT NULL DEFAULT '[]',
+                created     INTEGER NOT NULL DEFAULT (strftime('%s','now'))
             );
             "#,
         )?;
@@ -220,6 +241,58 @@ impl Store {
         c.execute("DELETE FROM tunnels WHERE id = ?1", params![id])?;
         Ok(())
     }
+
+    pub fn save_snippet(&self, snippet: &Snippet) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        let tags_json = serde_json::to_string(&snippet.tags)?;
+        c.execute(
+            "INSERT INTO snippets (id, title, command, category, description, tags)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                command = excluded.command,
+                category = excluded.category,
+                description = excluded.description,
+                tags = excluded.tags",
+            params![
+                snippet.id,
+                snippet.title,
+                snippet.command,
+                snippet.category,
+                snippet.description,
+                tags_json
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_snippets(&self) -> Result<Vec<Snippet>> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(
+            "SELECT id, title, command, category, description, tags FROM snippets ORDER BY category, title",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                let tags_str: String = r.get(5)?;
+                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+                Ok(Snippet {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    command: r.get(2)?,
+                    category: r.get(3)?,
+                    description: r.get(4)?,
+                    tags,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_snippet(&self, id: &str) -> Result<()> {
+        let c = self.conn.lock().unwrap();
+        c.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -254,5 +327,36 @@ mod tests {
     fn update_profile_rejects_unknown_id() {
         let (s, _d) = store();
         assert!(s.update_profile("nope", "n", None, &json!({})).is_err());
+    }
+
+    #[test]
+    fn snippet_crud_works() {
+        let (s, _d) = store();
+        let snip = Snippet {
+            id: "s1".to_string(),
+            title: "Check Disk Space".to_string(),
+            command: "df -h".to_string(),
+            category: Some("System".to_string()),
+            description: Some("Show mounted disk usage".to_string()),
+            tags: vec!["sysadmin".to_string(), "disk".to_string()],
+        };
+
+        s.save_snippet(&snip).unwrap();
+        let list = s.list_snippets().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "Check Disk Space");
+        assert_eq!(list[0].tags, vec!["sysadmin", "disk"]);
+
+        // update
+        let mut snip2 = snip.clone();
+        snip2.command = "df -h /".to_string();
+        s.save_snippet(&snip2).unwrap();
+        let list2 = s.list_snippets().unwrap();
+        assert_eq!(list2.len(), 1);
+        assert_eq!(list2[0].command, "df -h /");
+
+        // delete
+        s.delete_snippet("s1").unwrap();
+        assert!(s.list_snippets().unwrap().is_empty());
     }
 }
