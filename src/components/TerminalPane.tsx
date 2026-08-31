@@ -69,8 +69,16 @@ export function TerminalPane({
   const [ended, setEnded] = useState<string | null>(null);
   const endedRef = useRef(false);
 
+  // Auto-reconnect state
+  const [autoReconnectCountdown, setAutoReconnectCountdown] = useState<number | null>(null);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const countdownIntervalRef = useRef<number | null>(null);
+
   // Drag & drop file upload state
   const [dropHover, setDropHover] = useState(false);
+  const homeDirRef = useRef<string | null>(null);
+  const currentCwdRef = useRef<string | null>(null);
   const [transferStatus, setTransferStatus] = useState<{
     fileName: string;
     transferred: number;
@@ -80,6 +88,23 @@ export function TerminalPane({
 
   const cb = useRef({ onExit, onReconnect, onClose, onInputData });
   cb.current = { onExit, onReconnect, onClose, onInputData };
+
+  const cancelAutoReconnect = () => {
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (countdownIntervalRef.current !== null) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setAutoReconnectCountdown(null);
+  };
+
+  const triggerReconnectNow = () => {
+    cancelAutoReconnect();
+    cb.current.onReconnect();
+  };
 
   useEffect(() => {
     const deferTeardown = () => {
@@ -133,6 +158,68 @@ export function TerminalPane({
       logFrontend("warn", `WebGL renderer unavailable, using canvas: ${String(e)}`);
     }
 
+    // Register OSC 7 (current working directory) handler
+    term.parser.registerOscHandler(7, (data) => {
+      try {
+        let p = data.trim();
+        if (p.startsWith("file://")) {
+          const u = new URL(p);
+          p = decodeURIComponent(u.pathname);
+        }
+        if (p.startsWith("/")) {
+          currentCwdRef.current = p;
+        }
+      } catch {
+        // Ignore malformed URI
+      }
+      return true;
+    });
+
+    // Register OSC 133 semantic integration handler for Cwd
+    term.parser.registerOscHandler(133, (data) => {
+      if (data.includes("Cwd=")) {
+        const match = data.match(/Cwd=([^;\x07\x1b]+)/);
+        if (match && match[1]) {
+          let p = match[1].trim();
+          const home = homeDirRef.current;
+          if (p.startsWith("~") && home) {
+            p = p === "~" ? home : posixJoin(home, p.slice(1).replace(/^\//, ""));
+          }
+          if (p.startsWith("/")) {
+            currentCwdRef.current = p;
+          }
+        }
+      }
+      return false;
+    });
+
+    // Track directory changes from window/tab title (common in bash/zsh default prompt configs)
+    const onTitle = term.onTitleChange((title) => {
+      if (!title) return;
+      const home = homeDirRef.current;
+      const colonMatch = title.match(/:\s*([/~][^\s:]*)/);
+      if (colonMatch && colonMatch[1]) {
+        let p = colonMatch[1].trim();
+        if (p.startsWith("~") && home) {
+          p = p === "~" ? home : posixJoin(home, p.slice(1).replace(/^\//, ""));
+        }
+        if (p.startsWith("/")) {
+          currentCwdRef.current = p;
+        }
+        return;
+      }
+      const bracketMatch = title.match(/\[[^@]+@[^ \]]+\s+([/~][^\]]+)\]/);
+      if (bracketMatch && bracketMatch[1]) {
+        let p = bracketMatch[1].trim();
+        if (p.startsWith("~") && home) {
+          p = p === "~" ? home : posixJoin(home, p.slice(1).replace(/^\//, ""));
+        }
+        if (p.startsWith("/")) {
+          currentCwdRef.current = p;
+        }
+      }
+    });
+
     let disposed = false;
     let sawOutput = false;
 
@@ -147,6 +234,34 @@ export function TerminalPane({
       );
       term.focus();
       cb.current.onExit();
+
+      // For remote sessions (SSH/RDP), schedule auto-reconnection with exponential backoff (1s, 2s, 4s, 8s, up to 16s)
+      if (spec.kind !== "local" && !disposed) {
+        const nextAttempt = reconnectAttempts + 1;
+        setReconnectAttempts(nextAttempt);
+        if (nextAttempt <= 5) {
+          const delaySecs = Math.min(16, Math.pow(2, nextAttempt - 1));
+          let remaining = delaySecs;
+          setAutoReconnectCountdown(remaining);
+
+          countdownIntervalRef.current = window.setInterval(() => {
+            remaining -= 1;
+            if (remaining > 0) {
+              setAutoReconnectCountdown(remaining);
+            } else {
+              if (countdownIntervalRef.current !== null) {
+                clearInterval(countdownIntervalRef.current);
+                countdownIntervalRef.current = null;
+              }
+            }
+          }, 1000);
+
+          reconnectTimerRef.current = window.setTimeout(() => {
+            setAutoReconnectCountdown(null);
+            cb.current.onReconnect();
+          }, delaySecs * 1000);
+        }
+      }
     };
 
     if (spec.kind !== "local") {
@@ -165,6 +280,8 @@ export function TerminalPane({
         if (ev.type === "output") {
           if (!sawOutput) {
             sawOutput = true;
+            setReconnectAttempts(0); // Reset attempts on successful traffic
+            cancelAutoReconnect();
             logFrontend("info", `pane first output (${spec.kind})`);
           }
           term.write(decodeB64(ev.data));
@@ -183,19 +300,35 @@ export function TerminalPane({
           void closeSession(id);
           return;
         }
+        if (spec.kind === "ssh") {
+          remoteHome(id)
+            .then((h) => {
+              homeDirRef.current = h;
+              if (!currentCwdRef.current) {
+                currentCwdRef.current = h;
+              }
+            })
+            .catch(() => {});
+        }
         onReady(id);
         term.focus();
       })
       .catch((err) => {
-        term.write(`\r\n\x1b[31m${String(err)}\x1b[0m\r\n`);
+        term.write(`\r\n\x1b[31m${String(err)}\x1b[0m\r
+`);
         finish("[connection failed]");
       });
 
     const onData = term.onData((data) => {
       if (endedRef.current) {
         const k = data.toLowerCase();
-        if (k === "r") cb.current.onReconnect();
-        else if (k === "x") cb.current.onClose();
+        if (k === "r") {
+          cancelAutoReconnect();
+          cb.current.onReconnect();
+        } else if (k === "x") {
+          cancelAutoReconnect();
+          cb.current.onClose();
+        }
         return;
       }
       if (idRef.current) {
@@ -297,10 +430,12 @@ export function TerminalPane({
 
     teardownRef.current = () => {
       disposed = true;
+      cancelAutoReconnect();
       logFrontend("info", `pane teardown (session=${idRef.current ?? "none"})`);
       ro.disconnect();
       window.clearTimeout(refitTimer);
       onData.dispose();
+      onTitle.dispose();
       onSelection.dispose();
       window.clearTimeout(copyTimer);
       document.removeEventListener("mouseup", flushCopy);
@@ -333,15 +468,87 @@ export function TerminalPane({
       return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
     };
 
+    const resolveTargetDirectory = async (sessionId: string): Promise<string> => {
+      let home = homeDirRef.current;
+      if (!home) {
+        try {
+          home = await remoteHome(sessionId);
+          homeDirRef.current = home;
+        } catch {
+          home = ".";
+        }
+      }
+
+      // Check live terminal buffer prompt for current working directory
+      if (termRef.current) {
+        try {
+          const buf = termRef.current.buffer.active;
+          const endY = buf.cursorY + buf.baseY;
+          const startY = Math.max(0, endY - 6);
+          for (let y = endY; y >= startY; y--) {
+            const line = buf.getLine(y)?.translateToString(true) || "";
+            if (!line.trim()) continue;
+
+            // Pattern 1: user@host:path[$#%>] or user@host: path[$#%>]
+            const m1 = line.match(/[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+:\s*([/~][^\s$#%>]*)\s*[$#%>]/);
+            if (m1 && m1[1]) {
+              let p = m1[1].trim();
+              if (p.startsWith("~")) {
+                p = p === "~" ? home : posixJoin(home, p.slice(1).replace(/^\//, ""));
+              }
+              if (p.startsWith("/")) {
+                currentCwdRef.current = p;
+                return p;
+              }
+            }
+
+            // Pattern 2: [user@host path][$#%>]
+            const m2 = line.match(/\[[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\s+([/~][^\s\]$#%>]+)\]\s*[$#%>]/);
+            if (m2 && m2[1]) {
+              let p = m2[1].trim();
+              if (p.startsWith("~")) {
+                p = p === "~" ? home : posixJoin(home, p.slice(1).replace(/^\//, ""));
+              }
+              if (p.startsWith("/")) {
+                currentCwdRef.current = p;
+                return p;
+              }
+            }
+
+            // Pattern 3: general prompt with : path[$#%>]
+            const m3 = line.match(/:\s*([/~][^\s$#%>]*)\s*[$#%>]/);
+            if (m3 && m3[1]) {
+              let p = m3[1].trim();
+              if (p.startsWith("~")) {
+                p = p === "~" ? home : posixJoin(home, p.slice(1).replace(/^\//, ""));
+              }
+              if (p.startsWith("/")) {
+                currentCwdRef.current = p;
+                return p;
+              }
+            }
+          }
+        } catch {
+          // Ignore buffer scraping errors
+        }
+      }
+
+      if (currentCwdRef.current) {
+        return currentCwdRef.current;
+      }
+
+      return home || ".";
+    };
+
     const handleUploadFiles = async (paths: string[]) => {
       const sessionId = idRef.current;
       if (!sessionId || paths.length === 0) return;
 
       let targetDir = ".";
       try {
-        targetDir = await remoteHome(sessionId);
+        targetDir = await resolveTargetDirectory(sessionId);
       } catch {
-        targetDir = ".";
+        targetDir = homeDirRef.current || ".";
       }
 
       for (const localPath of paths) {
@@ -460,7 +667,7 @@ export function TerminalPane({
             Drop files to upload via SFTP
           </div>
           <div style={{ fontSize: 12, color: "var(--muted)" }}>
-            Files will be transferred to remote home directory
+            Files will be transferred to active remote directory ({currentCwdRef.current || "~"})
           </div>
         </div>
       )}
@@ -521,11 +728,29 @@ export function TerminalPane({
 
       {ended && (
         <div className="ended-bar" role="status">
-          <span className="ended-msg">{ended}</span>
-          <button className="ended-btn primary" onClick={onReconnect}>
-            <kbd>R</kbd> Reconnect
-          </button>
-          <button className="ended-btn" onClick={onClose}>
+          <span className="ended-msg">
+            {ended}
+            {autoReconnectCountdown !== null && (
+              <span style={{ marginLeft: 8, color: "var(--lime)", fontWeight: 500 }}>
+                (Auto-reconnecting in {autoReconnectCountdown}s... [attempt {reconnectAttempts}/5])
+              </span>
+            )}
+          </span>
+          {autoReconnectCountdown !== null ? (
+            <>
+              <button className="ended-btn primary" onClick={triggerReconnectNow}>
+                Reconnect Now
+              </button>
+              <button className="ended-btn" onClick={cancelAutoReconnect}>
+                Cancel Auto
+              </button>
+            </>
+          ) : (
+            <button className="ended-btn primary" onClick={() => { cancelAutoReconnect(); cb.current.onReconnect(); }}>
+              <kbd>R</kbd> Reconnect
+            </button>
+          )}
+          <button className="ended-btn" onClick={() => { cancelAutoReconnect(); cb.current.onClose(); }}>
             <kbd>X</kbd> Close
           </button>
         </div>

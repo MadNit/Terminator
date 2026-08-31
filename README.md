@@ -57,6 +57,9 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Multi-Exec / Keystroke Broadcasting (⚡)**: One-click toggle in top navigation to broadcast typed input simultaneously across all active terminal sessions and split panes.
 - **GPU-Accelerated Rendering**: Powered by `xterm.js` and `@xterm/addon-webgl` for high-throughput, low-latency terminal rendering.
 - **Saved Connection Profiles**: Persist SSH, RDP, and local terminal profiles with custom arguments, working directories, and host configurations in a local SQLite database (`rusqlite`).
+- **Auto-Reconnection & Keep-Alive Resilience**:
+  - **SSH Keep-Alive Heartbeats**: Periodic keepalive probe pings keep firewalls and NAT routers from dropping idle sessions.
+  - **Intelligent Exponential Backoff**: Automatically attempts reconnection on dropped sessions with countdown timer (1s, 2s, 4s, 8s, 16s), manual "Reconnect Now" override, and in-place tab restoration.
 - **Live Reconnect & Resilient Tabs**: Reconnect disconnected sessions in place without losing tab layout or credential mappings.
 
 ### SSH Remote Access, Jump Hosts & Tunneling
@@ -76,7 +79,7 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Accurate Scancode Input**: Translates modern web keyboard and mouse events directly into native Windows scancodes and mouse motion packets.
 
 ### Direct Terminal File Transfer & SFTP Drawer
-- **Direct Terminal Drag & Drop Upload**: Drag any file directly from Finder / File Explorer onto an active SSH terminal pane to trigger an immediate, high-speed SFTP streaming upload with live progress toast and terminal notification.
+- **Direct Terminal Drag & Drop Upload**: Drag any file directly from Finder / File Explorer onto an active SSH terminal pane to trigger an immediate, high-speed SFTP streaming upload to the shell's **active working directory** (automatically resolved via OSC 7, OSC 133 semantic CWD markers, shell window title updates, and prompt path inspection), with live progress toast and terminal notification.
 - **Remote Host File Drawer (⌘J / Ctrl+J)**: Integrated slide-out file browser docked to the active SSH session tab.
 - **Desktop Drag & Drop**: Drop files directly from Finder / File Explorer onto the remote directory drawer to trigger streaming SFTP uploads.
 - **Clipboard Integration**: Copy files in your OS file manager and paste (⌘V / Ctrl+V) directly into the remote drawer.
