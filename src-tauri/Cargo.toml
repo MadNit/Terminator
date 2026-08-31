@@ -1,0 +1,38 @@
+[package]
+name = "terminator"
+version = "0.1.0"
+description = "Multi-tab terminal with saved SSH and RDP sessions"
+edition = "2021"
+license = "MIT"
+
+# THIN ADAPTER ONLY.
+#
+# This crate must contain no session logic -- it translates Tauri IPC into
+# terminator-core calls and nothing more. That is what keeps the webview
+# choice reversible: swapping to an Electron sidecar means replacing this
+# crate alone, and the core never notices.
+
+[lib]
+name = "terminator_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+terminator-core = { path = "../core", features = ["ssh", "rdp"] }
+
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+tauri-plugin-clipboard-manager = "2.3.2"
+tauri-plugin-dialog = "2"
+tauri-plugin-drag = "2"

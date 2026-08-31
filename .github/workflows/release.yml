@@ -1,0 +1,112 @@
+name: Release
+
+# Publishes installers for macOS, Windows and Linux to a GitHub Release.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The release is created as a *draft* so you can review the artifacts and write
+# the notes before anyone can download a broken build.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple silicon and Intel are built separately rather than as a
+          # universal binary: the pinned crypto crates pull in per-arch
+          # assembly, and two clean bundles are easier to debug than one
+          # lipo'd artifact that fails on only one architecture.
+          - os: macos-latest
+            label: macOS (Apple silicon)
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - os: macos-latest
+            label: macOS (Intel)
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          # Oldest supported glibc wins: binaries built on 22.04 run on 22.04
+          # and newer, but not the reverse.
+          - os: ubuntu-22.04
+            label: Linux (x86_64)
+            target: x86_64-unknown-linux-gnu
+            args: ''
+          - os: windows-latest
+            label: Windows (x86_64)
+            target: x86_64-pc-windows-msvc
+            args: ''
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Linux dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional macOS signing + notarization. When these secrets are
+          # absent the build still succeeds, just unsigned -- see
+          # docs/RELEASING.md for what that means for users.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'Terminator __VERSION__'
+          releaseBody: |
+            See the assets below to download and install this version.
+
+            **macOS users:** the app is unsigned, so Gatekeeper will block it.
+            After moving it to Applications, run:
+
+            ```
+            xattr -cr /Applications/Terminator.app
+            ```
+
+            **Windows users:** SmartScreen may warn on first run. Choose
+            "More info" then "Run anyway".
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

@@ -1,0 +1,50 @@
+[package]
+name = "terminator-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Headless session core: transports, taps, logging, storage. No UI dependencies."
+
+# NOTE: This crate must never depend on tauri (or any other UI shell).
+# Everything of value lives here so the UI layer stays a thin, swappable
+# adapter. If the webview ever needs replacing, only src-tauri/ is affected.
+
+[dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+portable-pty = { workspace = true }
+vte = { workspace = true }
+unicode-width = { workspace = true }
+rusqlite = { workspace = true }
+keyring = { workspace = true }
+chacha20poly1305 = { workspace = true }
+argon2 = { workspace = true }
+zeroize = { workspace = true }
+
+# Optional so phase-1 builds stay fast. They remain in Cargo.lock either way,
+# which keeps the fragile russh/ironrdp pin continuously verified rather than
+# discovering a conflict months from now.
+russh = { workspace = true, optional = true }
+ironrdp = { workspace = true, optional = true }
+ironrdp-tls = { workspace = true, optional = true }
+russh-sftp = { version = "2.4.0", optional = true }
+ironrdp-tokio = { workspace = true, optional = true }
+# Only used to ship framebuffer rectangles across the JSON IPC boundary.
+base64 = { version = "0.22", optional = true }
+
+[features]
+default = []
+ssh = ["dep:russh", "dep:russh-sftp"]
+rdp = ["dep:ironrdp", "dep:ironrdp-tls", "dep:ironrdp-tokio", "dep:base64"]
+
+[dev-dependencies]
+tempfile = "3"

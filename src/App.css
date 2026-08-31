@@ -1,0 +1,1237 @@
+/* Fonts are bundled, not fetched from a CDN: this is a desktop app that must
+   render correctly with no network. */
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/500.css";
+@import "@fontsource/geist-sans/600.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+:root {
+  /* "ink" surfaces, darkest to lightest, plus a lime accent. */
+  --ink-900: #0b0f19;
+  --ink-850: #0d111a;
+  --ink-800: #111827;
+  --ink-700: #1f2937;
+  --ink-600: #374151;
+
+  --lime: #bef264;
+  --lime-dim: #a3e643;
+  --lime-soft: #d9f99d;
+
+  --bg: var(--ink-900);
+  --chrome: var(--ink-800);
+  --border: var(--ink-600);
+  --fg: #f3f4f6;
+  --dim: #6b7280;
+  --muted: #9ca3af;
+  --accent: var(--lime);
+
+  --danger: #f43f5e;
+  --warn: #fbbf24;
+  --ok: #34d399;
+
+  --sans: "Geist Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --radius: 6px;
+  --radius-lg: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+::selection { background: rgba(190, 242, 100, 0.2); }
+
+/* Thin, dark scrollbars so they recede into the chrome. */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--ink-900); }
+::-webkit-scrollbar-thumb { background: var(--ink-600); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+/* ---- top app bar ---- */
+.appbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 0 0 auto;
+  height: 48px;
+  padding: 0 14px;
+  background: var(--ink-800);
+  border-bottom: 1px solid var(--ink-600);
+  user-select: none;
+}
+.panel-toggle {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  color: var(--dim);
+  cursor: pointer;
+}
+.panel-toggle:hover { background: var(--ink-700); color: var(--fg); }
+.panel-toggle.on { color: var(--lime); }
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.brand-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius);
+  background: var(--lime);
+  color: var(--ink-900);
+}
+.brand-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Quick connect. Capped rather than stretched so it stays a control, not a
+   banner, on a wide window. */
+.quick {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  max-width: 420px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+}
+.quick:focus-within { border-color: rgba(190, 242, 100, 0.4); }
+.quick-icon { display: flex; color: var(--dim); flex: 0 0 auto; }
+.quick-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+}
+.quick-input::placeholder { color: var(--dim); }
+.quick-kbd {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: 10px;
+}
+
+.appnav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.navlink {
+  appearance: none;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 4px 6px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.navlink:hover:not(:disabled) { color: var(--fg); background: var(--ink-700); }
+.navlink:disabled { color: var(--dim); cursor: default; }
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  color: var(--lime);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ---- tab bar ---- */
+.tabbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px 8px 0;
+  background: var(--ink-800);
+  border-bottom: 1px solid var(--ink-600);
+  user-select: none;
+  flex: 0 0 auto;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--dim);
+  cursor: pointer;
+  max-width: 220px;
+  font-size: 12.5px;
+  /* Absorb the bar's bottom border so the active tab joins the pane. */
+  margin-bottom: -1px;
+}
+.tab:hover { background: rgba(31, 41, 55, 0.6); color: var(--muted); }
+.tab.active {
+  background: var(--ink-850);
+  border-color: var(--ink-600);
+  color: var(--fg);
+}
+
+.tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.dot.live { background: var(--lime); box-shadow: 0 0 6px rgba(190, 242, 100, 0.5); }
+.dot.dead { background: var(--ink-600); }
+
+.tab-close, .tab-new, .ghost, .icon-btn {
+  appearance: none;
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+}
+.tab-close:hover, .tab-new:hover, .ghost:hover, .icon-btn:hover:not(:disabled) {
+  background: var(--ink-700);
+  color: var(--fg);
+}
+.tab-new, .icon-btn { font-size: 16px; }
+.ghost { font-size: 11.5px; }
+.icon-btn:disabled { color: var(--ink-600); cursor: default; }
+
+.spacer { flex: 1; }
+
+.panes { flex: 1 1 auto; position: relative; min-height: 0; background: var(--ink-850); }
+.pane { position: absolute; inset: 0; }
+
+/* xterm measures its container, so the host must have real height. */
+.term-host { width: 100%; height: 100%; padding: 6px 8px; }
+
+.empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: var(--dim); gap: 8px;
+}
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  background: var(--ink-800);
+  border-top: 1px solid var(--ink-600);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  flex: 0 0 auto;
+}
+.dim { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- layout: sidebar + main ---- */
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  /* The sidebar slides out of this box rather than shrinking in place, so it
+     must not spill over the main pane while animating. */
+  overflow: hidden;
+}
+.main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- sidebar ---- */
+.sidebar {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-800);
+  border-right: 1px solid var(--ink-600);
+  /* Slide-out collapse.
+   *
+   * `margin-left` is animated rather than `width` deliberately: animating
+   * width reflows the sidebar's own contents on every frame, so the tree
+   * visibly reflows and text re-wraps as it closes. Shifting it sideways
+   * leaves the layout inside it untouched, which is what makes it read as a
+   * drawer sliding away instead of a panel being squashed. */
+  transition:
+    margin-left 180ms ease,
+    opacity 140ms ease;
+}
+.body.collapsed .sidebar {
+  margin-left: -260px;
+  opacity: 0;
+}
+/* Respect a reduced-motion preference: snap instead of slide. */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar { transition: none; }
+}
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ink-600);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.side-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 8px 8px 12px;
+}
+.group + .group { margin-top: 4px; }
+.group-name {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 4px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  border-radius: var(--radius);
+}
+.group-name:hover { color: var(--muted); }
+/* One caret glyph, rotated: closed points right, open points down. */
+.group-name svg { transition: transform 120ms ease; flex: 0 0 auto; }
+.group-name.open svg { transform: rotate(90deg); }
+.group-label { flex: 1; text-align: left; }
+.group-count {
+  background: var(--ink-700);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+/* A rail under the caret ties the rows to their group, as in a file tree. */
+.group-items {
+  list-style: none;
+  margin: 2px 0 0 9px;
+  padding: 0 0 0 10px;
+  border-left: 1px solid var(--ink-600);
+}
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-radius: var(--radius);
+}
+.profile:hover { background: rgba(31, 41, 55, 0.6); color: var(--fg); }
+.profile.selected {
+  background: var(--ink-700);
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 var(--lime);
+}
+.profile-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-600);
+  flex: 0 0 auto;
+}
+.live-dot.on {
+  background: var(--lime);
+  box-shadow: 0 0 6px rgba(190, 242, 100, 0.55);
+}
+/* Row actions stay hidden until hover so the list reads as names, not icons.
+   The disconnect control is the exception: a live session must always offer a
+   visible way to stop it. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.row-action {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  padding: 3px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+}
+.profile:hover .row-action,
+.profile .row-action.stop,
+.row-action:focus-visible {
+  opacity: 1;
+}
+.row-action:hover:not(:disabled) { background: var(--ink-600); color: var(--lime); }
+.row-action.stop { color: var(--warn); }
+.row-action.stop:hover:not(:disabled) { background: var(--ink-600); color: var(--warn); }
+.row-action.danger:hover:not(:disabled) { background: rgba(244, 63, 94, 0.15); color: var(--danger); }
+/* Blocked (e.g. RDP) stays visible but dimmed, so its tooltip can explain why.
+   A disabled bin on a live row is pure noise, so that one hides instead. */
+.row-action:disabled { color: var(--ink-600); cursor: default; }
+.row-action:disabled:hover { background: transparent; color: var(--ink-600); }
+.row-action.danger:disabled { opacity: 0; pointer-events: none; }
+.badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--ink-700);
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.badge.ssh { background: rgba(190, 242, 100, 0.12); color: var(--lime); }
+.badge.rdp { background: rgba(251, 191, 36, 0.12); color: var(--warn); }
+
+/* ---- modal ---- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 6, 12, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.modal {
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  padding: 20px;
+  width: 380px;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.modal h2 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.modal label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.modal input[type="text"],
+.modal input[type="password"],
+.modal input[type="number"],
+.modal input:not([type]) {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 9px;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  box-sizing: border-box;
+  outline: none;
+}
+.modal input:focus { border-color: rgba(190, 242, 100, 0.4); }
+.modal .row {
+  display: flex;
+  gap: 8px;
+}
+.modal .grow { flex: 1; }
+.modal .port { width: 84px; }
+.modal .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.modal .check input { width: auto; margin: 0; }
+.modal .actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+/* pw-modal is a flex column with its own gap; the extra margin double-spaces it. */
+.pw-modal .actions { margin-top: 2px; }
+.seg {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.seg button {
+  appearance: none;
+  flex: 1;
+  padding: 6px;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  color: var(--muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.seg button:hover { background: var(--ink-600); color: var(--fg); }
+.seg button.on {
+  background: var(--lime);
+  border-color: var(--lime);
+  color: var(--ink-900);
+  font-weight: 500;
+}
+.seg.small button { padding: 4px; }
+/* Dialog action buttons.
+ *
+ * Both variants derive from one base so they share height, font and metrics.
+ * Previously only `.primary` was styled and the secondary button fell through
+ * to the native control, which renders at a different height -- the two never
+ * lined up. */
+.actions button,
+.unlock-actions button,
+button.btn {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.2;
+  min-width: 88px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--ink-600);
+  background: var(--ink-700);
+  color: var(--muted);
+  cursor: pointer;
+  text-align: center;
+}
+.actions button:hover:not(:disabled),
+.unlock-actions button:hover:not(:disabled),
+button.btn:hover:not(:disabled) {
+  background: var(--ink-600);
+  color: var(--fg);
+}
+.actions button:disabled,
+.unlock-actions button:disabled,
+button.btn:disabled { opacity: 0.5; cursor: default; }
+
+button.primary,
+.actions button.primary,
+.unlock-actions button.primary {
+  background: var(--lime);
+  border-color: var(--lime);
+  color: var(--ink-900);
+  font-weight: 500;
+}
+button.primary:hover:not(:disabled),
+.actions button.primary:hover:not(:disabled),
+.unlock-actions button.primary:hover:not(:disabled) {
+  background: var(--lime-dim);
+  border-color: var(--lime-dim);
+  color: var(--ink-900);
+}
+
+/* Destructive actions. Same metrics as the base, rose only. */
+button.danger,
+.actions button.danger {
+  background: rgba(244, 63, 94, 0.14);
+  border-color: rgba(244, 63, 94, 0.45);
+  color: #fda4af;
+}
+button.danger:hover:not(:disabled),
+.actions button.danger:hover:not(:disabled) {
+  background: rgba(244, 63, 94, 0.24);
+  border-color: var(--danger);
+  color: #ffe4e6;
+}
+
+/* ---- confirm dialog ---- */
+.confirm-modal { max-width: 380px; }
+.confirm-message { margin: 0 0 6px; line-height: 1.45; color: var(--muted); }
+
+/* ---- profile view (modal) ---- */
+.profile-view {
+  width: 420px;
+  max-width: 92vw;
+}
+.pv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.pv-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pv-status {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  flex: 0 0 auto;
+}
+.pv-status.on { color: var(--lime); }
+.pv-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.pv-close:hover { color: var(--fg); }
+.pv-grid {
+  margin: 0 0 16px;
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--ink-850);
+}
+.pv-row {
+  display: flex;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ink-600);
+}
+.pv-row:last-child { border-bottom: none; }
+.pv-row dt {
+  width: 76px;
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.pv-row dd {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Visually hidden but still read aloud. Used for copy confirmations, which are
+ * otherwise conveyed only by an icon swap. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Dim until the row is hovered or the button is focused: visible enough to be
+ * discoverable, quiet enough not to compete with the values themselves. */
+.copy-btn {
+  flex: 0 0 auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--dim);
+  opacity: 0.55;
+  cursor: pointer;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background 0.12s ease;
+}
+.pv-row:hover .copy-btn,
+.copy-btn:hover,
+.copy-btn:focus-visible {
+  opacity: 1;
+}
+.copy-btn:hover {
+  color: var(--fg);
+  background: var(--ink-700);
+}
+.copy-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  color: var(--fg);
+}
+/* Result states stay at full strength so the confirmation is never missed. */
+.copy-btn.ok {
+  color: var(--accent);
+  opacity: 1;
+}
+.copy-btn.fail {
+  color: var(--danger);
+  opacity: 1;
+}
+.pv-blocked { margin: 0 0 14px; line-height: 1.45; }
+/* Delete sits apart from the safe actions so it isn't hit by accident. */
+.pv-actions .spacer { flex: 1; }
+
+/* Standalone `.primary` buttons outside dialog action rows (e.g. the header's
+ * "New Session") opt into their own compact sizing. */
+button.primary.sm {
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 0;
+  height: 28px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--lime);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+button.primary:disabled { opacity: 0.5; cursor: default; }
+.hint {
+  font-size: 11px;
+  color: var(--dim);
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+.hint.pad { padding: 8px 6px; }
+.hint.warn { color: var(--warn); }
+
+/* ---- vault unlock gate ---- */
+.unlock-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ink-900);
+}
+.unlock-card {
+  width: 380px;
+  padding: 24px;
+  border-radius: var(--radius-lg);
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.unlock-card h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.unlock-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.unlock-card input {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--ink-600);
+  background: var(--ink-700);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.unlock-card input:focus { border-color: rgba(190, 242, 100, 0.4); }
+.unlock-error {
+  font-size: 11.5px;
+  color: #fda4af;
+  word-break: break-word;
+}
+.unlock-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.unlock-field {
+  position: relative;
+  display: flex;
+}
+.unlock-field input {
+  flex: 1;
+  padding-right: 34px;
+}
+.reveal-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+}
+.reveal-toggle:hover {
+  color: var(--fg);
+  background: var(--ink-600);
+}
+
+.pw-modal { display: flex; flex-direction: column; gap: 12px; width: 360px; }
+.pw-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pw-remember input { width: auto; }
+.pw-remember input[type="checkbox"],
+.modal .check input[type="checkbox"] { accent-color: var(--lime); }
+
+/* ---------------------------------------------------------------------------
+   File drawer
+   ---------------------------------------------------------------------------
+   The right-hand mirror of the sidebar. Same slide technique for the same
+   reason: animating margin (not width) keeps the panel's own contents from
+   reflowing on every frame while it moves. */
+.filedrawer {
+  width: 340px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-800);
+  border-left: 1px solid var(--ink-600);
+  transition:
+    margin-right 180ms ease,
+    opacity 140ms ease;
+}
+.filedrawer.closed {
+  margin-right: -340px;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .filedrawer { transition: none; }
+}
+
+.fdrawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ink-600);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+.fdrawer-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.fdrawer-title { color: var(--muted); }
+/* The target host, so a drop or a delete is never aimed at the wrong machine. */
+.fdrawer-host {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--lime);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A drop anywhere in the window is delivered to the app, so the drawer has to
+   say plainly when it is the thing that will receive the file. */
+.filedrawer.dropping {
+  outline: 2px dashed var(--lime);
+  outline-offset: -4px;
+}
+.filedrawer.dropping .fdrawer-foot {
+  color: var(--lime);
+  border-top-color: var(--lime);
+}
+
+.fdrawer-foot {
+  padding: 6px 12px;
+  border-top: 1px solid var(--ink-600);
+  font-size: 10.5px;
+  color: var(--dim);
+  text-align: center;
+}
+
+.fnote.hint { color: var(--lime); }
+
+.fpane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fpane + .fpane { border-top: 1px solid var(--ink-600); }
+
+.fpane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px 6px;
+}
+.fpane-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.fpane-tools { display: flex; align-items: center; gap: 4px; }
+
+/* Full path, truncated from the left: the tail is the part that identifies
+   where you are, so clipping the front is the useful direction. */
+.fpath {
+  padding: 0 10px 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.flist {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.frow {
+  display: grid;
+  grid-template-columns: 14px 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: var(--radius);
+  cursor: default;
+  font-size: 12px;
+  user-select: none;
+}
+.frow:hover { background: var(--ink-700); }
+.frow.sel { background: rgba(190, 242, 100, 0.14); }
+.frow.hidden-entry { opacity: 0.55; }
+/* Navigation, not a file: kept visually quieter and always at the top. */
+.frow.updir {
+  cursor: pointer;
+  color: var(--dim);
+  font-family: var(--mono);
+}
+.frow.updir:hover { color: var(--muted); }
+.fkind { color: var(--accent); font-size: 10px; text-align: center; }
+.fname {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fsize,
+.fdate {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.fnote {
+  padding: 8px 12px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.fnote.error { color: var(--danger); }
+
+.ficon {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  border-radius: var(--radius);
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ficon:hover:not(:disabled) { background: var(--ink-700); color: var(--fg); }
+.ficon:disabled { opacity: 0.35; cursor: default; }
+.ficon.on { color: var(--accent); border-color: var(--ink-600); }
+.ficon.danger:hover:not(:disabled) { color: var(--danger); }
+
+.fbtn {
+  appearance: none;
+  background: var(--ink-700);
+  border: 1px solid var(--ink-600);
+  color: var(--fg);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: var(--sans);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fbtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.fbtn:disabled { opacity: 0.35; cursor: default; }
+
+.ftransfer {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ink-600);
+  background: var(--ink-850);
+}
+.ftransfer.error { color: var(--danger); }
+.ftransfer-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fbar {
+  height: 3px;
+  background: var(--ink-700);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.fbar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
+.fnewfolder {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--ink-600);
+  background: var(--ink-850);
+}
+.fnewfolder-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.fnewfolder-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ---- session-ended prompt ----
+ *
+ * Overlaid rather than laid out below the terminal: adding a real row would
+ * resize the pane, and xterm would reflow the very output the user is trying
+ * to read. Nothing is being written any more, so covering the bottom-right
+ * costs nothing.
+ */
+.ended-bar {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-family: var(--sans);
+  font-size: 12px;
+  animation: ended-in 140ms ease-out;
+}
+@keyframes ended-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.ended-msg {
+  color: var(--muted);
+  font-family: var(--mono);
+  padding-right: 4px;
+}
+
+.ended-btn {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--ink-700);
+  color: var(--fg);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius);
+  font: inherit;
+  cursor: pointer;
+}
+.ended-btn:hover { background: var(--ink-600); }
+.ended-btn.primary {
+  background: var(--lime);
+  border-color: var(--lime);
+  color: var(--ink-900);
+  font-weight: 600;
+}
+.ended-btn.primary:hover { background: var(--lime-dim); }
+
+.ended-btn kbd {
+  min-width: 16px;
+  padding: 1px 4px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+  opacity: 0.75;
+}
+
+/* ---- RDP pane ---- */
+.rdp-host {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--ink-900);
+  overflow: hidden;
+}
+
+/* Letterboxed rather than stretched: the desktop has a fixed aspect ratio
+ * until the server honours a resize, and stretching makes text unreadable. */
+.rdp-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  outline: none;
+  /* The desktop is a grid of real pixels; smoothing it turns crisp text into
+   * mush whenever the pane is not exactly 1:1. */
+  image-rendering: pixelated;
+}
+.rdp-canvas:focus-visible {
+  box-shadow: 0 0 0 2px var(--lime);
+}
+
+.rdp-status {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--ink-800);
+  border: 1px solid var(--ink-600);
+  border-radius: var(--radius-lg);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}

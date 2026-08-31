@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = ["core", "src-tauri"]
+
+# Dependency pins live here so the core and the app can never drift apart.
+#
+# PINNED SET -- russh and ironrdp both ride the RustCrypto pre-release chain
+# and do NOT co-resolve at their latest versions.
+#   ironrdp =0.16.0 -> picky 7.0.0-rc.23 -> ecdsa =0.17.0-rc.17
+#   russh   =0.60.1 -> ecdsa ^0.17.0-rc.16, satisfied by rc.17  ✓
+#   russh  >=0.62   -> ecdsa ^0.17 (stable) -- will NOT resolve against ironrdp.
+# Bump these two together, then re-run `cargo generate-lockfile`.
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+bytes = "1"
+
+portable-pty = "0.9"
+russh = "=0.60.1"
+ironrdp = { version = "=0.16.0", features = [
+    "connector", "session", "graphics", "input", "cliprdr", "dvc", "svc", "displaycontrol",
+] }
+ironrdp-tls = { version = "0.2", features = ["rustls-ring"] }
+# ironrdp-tokio 0.9, NOT 0.10: 0.10 wants ironrdp-connector ^0.10, but the
+# ironrdp 0.16 facade pins connector 0.9. Two connector majors in one tree
+# would compile, then fail with "expected ClientConnector, found
+# ClientConnector" -- the same type name from two different crate versions.
+ironrdp-tokio = "0.9.0"
+
+# Headless VT parser. Tiny dep tree (arrayvec/bitflags/memchr) and no crypto,
+# so it cannot conflict with the pinned set above.
+vte = "0.15"
+unicode-width = "0.2"
+
+# rusqlite, not sqlx: sqlx 0.9 always builds sqlx-postgres, whose rand 0.10.1
+# conflicts with the rand_core pinned above.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# Vault crypto for the no-keychain fallback. Deliberately on the *stable*
+# RustCrypto branch (aead 0.5 / chacha20 0.9), which is already in the tree via
+# keyring's crypto-rust feature -- so this adds no new major versions and stays
+# clear of the russh/ironrdp pre-release chain pinned above.
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+zeroize = { version = "1", features = ["derive"] }
+
+# keyring 3.6, not 4.x: v4 moved platform backends into separate crates.
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
