@@ -53,6 +53,8 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 
 ### Terminal & Session Management
 - **True Multi-Tab PTY**: Native pseudo-terminal allocation across macOS, Linux, and Windows using `portable-pty`.
+- **Multi-Pane Split Views (1x1, 1x2, 2x1, 2x2 Grid)**: Split your workspace into side-by-side vertical splits, horizontal stacked panes, or a 2x2 multi-terminal grid (MobaXterm style).
+- **Multi-Exec / Keystroke Broadcasting (⚡)**: One-click toggle in top navigation to broadcast typed input simultaneously across all active terminal sessions and split panes.
 - **GPU-Accelerated Rendering**: Powered by `xterm.js` and `@xterm/addon-webgl` for high-throughput, low-latency terminal rendering.
 - **Saved Connection Profiles**: Persist SSH, RDP, and local terminal profiles with custom arguments, working directories, and host configurations in a local SQLite database (`rusqlite`).
 - **Live Reconnect & Resilient Tabs**: Reconnect disconnected sessions in place without losing tab layout or credential mappings.

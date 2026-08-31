@@ -26,6 +26,7 @@ import {
   setSecret,
   type Profile,
   type TransportSpec,
+  writeSession,
 } from "./lib/api";
 import "./App.css";
 
@@ -99,6 +100,12 @@ export default function App() {
   const [filesOpen, setFilesOpen] = useState(
     () => localStorage.getItem("filesOpen") === "1",
   );
+  // Split pane layout: 1x1, 1x2 (vert), 2x1 (horiz), 2x2 (grid)
+  const [splitLayout, setSplitLayout] = useState<"1x1" | "1x2" | "2x1" | "2x2">("1x1");
+  // Multi-exec broadcast mode
+  const [broadcast, setBroadcast] = useState(false);
+  // Track focused tab key in multi-pane view
+  const [focusedPaneKey, setFocusedPaneKey] = useState<number | null>(null);
 
   useEffect(() => {
     localStorage.setItem("sidebarOpen", sidebarOpen ? "1" : "0");
@@ -201,6 +208,24 @@ export default function App() {
       if (next.length && key === active) setActive(next[next.length - 1].key);
       return next;
     });
+  };
+
+  /** Broadcast keystroke data to all active live terminal sessions */
+  const handleBroadcastInput = (originTabKey: number, data: string) => {
+    if (!broadcast) {
+      // Direct send to this pane only
+      const tab = tabs.find((t) => t.key === originTabKey);
+      if (tab?.sessionId) {
+        void writeSession(tab.sessionId, data);
+      }
+      return;
+    }
+    // Fan out to all active sessions across tabs
+    for (const tab of tabs) {
+      if (tab.sessionId && !tab.exited && tab.spec.kind !== "rdp") {
+        void writeSession(tab.sessionId, data);
+      }
+    }
   };
 
   /**
@@ -399,7 +424,21 @@ export default function App() {
         filesOpen={filesOpen}
         onToggleFiles={() => setFilesOpen((v) => !v)}
         onOpenHistory={() => setHistoryOpen(true)}
+        splitLayout={splitLayout}
+        onSplitLayout={setSplitLayout}
+        broadcast={broadcast}
+        onToggleBroadcast={() => setBroadcast((b) => !b)}
       />
+      {broadcast && (
+        <div className="broadcast-banner">
+          <span>⚡ <strong>Multi-Exec (Broadcast) Active</strong>: Typed keystrokes are sent to all live terminal sessions simultaneously.</span>
+          <div className="broadcast-banner-actions">
+            <button className="broadcast-banner-btn" onClick={() => setBroadcast(false)}>
+              Turn Off
+            </button>
+          </div>
+        </div>
+      )}
       <div className={`body ${sidebarOpen ? "" : "collapsed"} ${filesOpen ? "files-open" : ""}`}>
         <Sidebar
           profiles={profiles}
@@ -455,63 +494,177 @@ export default function App() {
           </div>
 
           <div className="panes">
-            {tabs.map((t) => (
-              <div
-                key={t.key}
-                className="pane"
-                style={{ display: t.key === active ? "block" : "none" }}
-              >
-                {t.spec.kind === "rdp" ? (
-                  <RdpPane
-                    key={t.gen}
-                    spec={t.spec}
-                    secretRef={t.secretRef}
-                    password={t.password}
-                    active={t.key === active}
-                    onReady={(id) =>
-                      setTabs((xs) =>
-                        xs.map((x) =>
-                          x.key === t.key ? { ...x, sessionId: id } : x,
-                        ),
-                      )
-                    }
-                    onExit={() =>
-                      setTabs((xs) =>
-                        xs.map((x) =>
-                          x.key === t.key ? { ...x, exited: true } : x,
-                        ),
-                      )
-                    }
-                    onReconnect={() => reconnectTab(t.key)}
-                    onClose={() => closeTab(t.key)}
-                  />
-                ) : (
-                  <TerminalPane
-                    key={t.gen}
-                    spec={t.spec}
-                    secretRef={t.secretRef}
-                    password={t.password}
-                    active={t.key === active}
-                    onReady={(id) =>
-                      setTabs((xs) =>
-                        xs.map((x) =>
-                          x.key === t.key ? { ...x, sessionId: id } : x,
-                        ),
-                      )
-                    }
-                    onExit={() =>
-                      setTabs((xs) =>
-                        xs.map((x) =>
-                          x.key === t.key ? { ...x, exited: true } : x,
-                        ),
-                      )
-                    }
-                    onReconnect={() => reconnectTab(t.key)}
-                    onClose={() => closeTab(t.key)}
-                  />
-                )}
+            {splitLayout === "1x1" ? (
+              <>
+                {tabs.map((t) => (
+                  <div
+                    key={t.key}
+                    className="pane"
+                    style={{ display: t.key === active ? "block" : "none" }}
+                  >
+                    {t.spec.kind === "rdp" ? (
+                      <RdpPane
+                        key={t.gen}
+                        spec={t.spec}
+                        secretRef={t.secretRef}
+                        password={t.password}
+                        active={t.key === active}
+                        onReady={(id) =>
+                          setTabs((xs) =>
+                            xs.map((x) =>
+                              x.key === t.key ? { ...x, sessionId: id } : x,
+                            ),
+                          )
+                        }
+                        onExit={() =>
+                          setTabs((xs) =>
+                            xs.map((x) =>
+                              x.key === t.key ? { ...x, exited: true } : x,
+                            ),
+                          )
+                        }
+                        onReconnect={() => reconnectTab(t.key)}
+                        onClose={() => closeTab(t.key)}
+                      />
+                    ) : (
+                      <TerminalPane
+                        key={t.gen}
+                        spec={t.spec}
+                        secretRef={t.secretRef}
+                        password={t.password}
+                        active={t.key === active}
+                        onInputData={(data) => handleBroadcastInput(t.key, data)}
+                        onReady={(id) =>
+                          setTabs((xs) =>
+                            xs.map((x) =>
+                              x.key === t.key ? { ...x, sessionId: id } : x,
+                            ),
+                          )
+                        }
+                        onExit={() =>
+                          setTabs((xs) =>
+                            xs.map((x) =>
+                              x.key === t.key ? { ...x, exited: true } : x,
+                            ),
+                          )
+                        }
+                        onReconnect={() => reconnectTab(t.key)}
+                        onClose={() => closeTab(t.key)}
+                      />
+                    )}
+                  </div>
+                ))}
+              </>
+            ) : (
+              <div className={`panes-grid layout-${splitLayout}`}>
+                {(() => {
+                  const maxPanes = splitLayout === "2x2" ? 4 : 2;
+                  const activeIdx = Math.max(0, tabs.findIndex((t) => t.key === active));
+                  // Order tabs starting from current active or front
+                  const reordered = [
+                    tabs[activeIdx],
+                    ...tabs.slice(0, activeIdx),
+                    ...tabs.slice(activeIdx + 1),
+                  ].filter(Boolean);
+
+                  const displayTabs = reordered.slice(0, maxPanes);
+
+                  return (
+                    <>
+                      {displayTabs.map((t) => (
+                        <div
+                          key={t.key}
+                          className={`pane-wrapper ${(focusedPaneKey ?? active) === t.key ? "focused" : ""}`}
+                          onClick={() => {
+                            setFocusedPaneKey(t.key);
+                            setActive(t.key);
+                          }}
+                        >
+                          <div className="pane-header">
+                            <span className="pane-title">
+                              <span className={`dot ${t.exited ? "dead" : "live"}`} />
+                              {t.title}
+                            </span>
+                            <button
+                              className="pane-close"
+                              title="Close pane"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                closeTab(t.key);
+                              }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                          <div className="pane-body">
+                            {t.spec.kind === "rdp" ? (
+                              <RdpPane
+                                key={t.gen}
+                                spec={t.spec}
+                                secretRef={t.secretRef}
+                                password={t.password}
+                                active={(focusedPaneKey ?? active) === t.key}
+                                onReady={(id) =>
+                                  setTabs((xs) =>
+                                    xs.map((x) =>
+                                      x.key === t.key ? { ...x, sessionId: id } : x,
+                                    ),
+                                  )
+                                }
+                                onExit={() =>
+                                  setTabs((xs) =>
+                                    xs.map((x) =>
+                                      x.key === t.key ? { ...x, exited: true } : x,
+                                    ),
+                                  )
+                                }
+                                onReconnect={() => reconnectTab(t.key)}
+                                onClose={() => closeTab(t.key)}
+                              />
+                            ) : (
+                              <TerminalPane
+                                key={t.gen}
+                                spec={t.spec}
+                                secretRef={t.secretRef}
+                                password={t.password}
+                                active={(focusedPaneKey ?? active) === t.key}
+                                onInputData={(data) => handleBroadcastInput(t.key, data)}
+                                onReady={(id) =>
+                                  setTabs((xs) =>
+                                    xs.map((x) =>
+                                      x.key === t.key ? { ...x, sessionId: id } : x,
+                                    ),
+                                  )
+                                }
+                                onExit={() =>
+                                  setTabs((xs) =>
+                                    xs.map((x) =>
+                                      x.key === t.key ? { ...x, exited: true } : x,
+                                    ),
+                                  )
+                                }
+                                onReconnect={() => reconnectTab(t.key)}
+                                onClose={() => closeTab(t.key)}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {Array.from({ length: Math.max(0, maxPanes - displayTabs.length) }).map((_, idx) => (
+                        <div key={`empty-${idx}`} className="pane-wrapper empty-split">
+                          <div className="empty">
+                            <span>Empty pane slot</span>
+                            <button className="tab-new" onClick={addLocalTab} title="Open a new shell">
+                              + Open shell
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  );
+                })()}
               </div>
-            ))}
+            )}
             {tabs.length === 0 && (
               <div className="empty">
                 No sessions.{" "}

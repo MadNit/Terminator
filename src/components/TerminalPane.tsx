@@ -23,6 +23,8 @@ interface Props {
   /** One-shot password, used when the user chose not to save it. */
   password?: string;
   active: boolean;
+  /** Function called when data is typed in this pane; useful for broadcast input */
+  onInputData?: (data: string) => void;
   onReady: (id: string) => void;
   onExit: () => void;
   /** Re-run this pane against the same target. */
@@ -36,6 +38,7 @@ export function TerminalPane({
   secretRef,
   password,
   active,
+  onInputData,
   onReady,
   onExit,
   onReconnect,
@@ -63,8 +66,8 @@ export function TerminalPane({
   // The main effect runs once, so it would otherwise capture the first
   // render's callbacks forever. Kept in a ref so the R/X keys always reach the
   // current handlers.
-  const cb = useRef({ onExit, onReconnect, onClose });
-  cb.current = { onExit, onReconnect, onClose };
+  const cb = useRef({ onExit, onReconnect, onClose, onInputData });
+  cb.current = { onExit, onReconnect, onClose, onInputData };
 
   useEffect(() => {
     const deferTeardown = () => {
@@ -209,7 +212,11 @@ export function TerminalPane({
         else if (k === "x") cb.current.onClose();
         return;
       }
-      if (idRef.current) void writeSession(idRef.current, data);
+      if (cb.current.onInputData) {
+        cb.current.onInputData(data);
+      } else if (idRef.current) {
+        void writeSession(idRef.current, data);
+      }
     });
 
     /* ---- copy on select (MobaXterm / PuTTY behaviour) ----

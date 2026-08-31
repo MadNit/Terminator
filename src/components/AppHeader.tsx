@@ -17,6 +17,10 @@ export function AppHeader({
   filesOpen,
   onToggleFiles,
   onOpenHistory,
+  splitLayout,
+  onSplitLayout,
+  broadcast,
+  onToggleBroadcast,
 }: {
   query: string;
   onQuery: (q: string) => void;
@@ -27,6 +31,10 @@ export function AppHeader({
   filesOpen: boolean;
   onToggleFiles: () => void;
   onOpenHistory?: () => void;
+  splitLayout?: "1x1" | "1x2" | "2x1" | "2x2";
+  onSplitLayout?: (layout: "1x1" | "1x2" | "2x1" | "2x2") => void;
+  broadcast?: boolean;
+  onToggleBroadcast?: () => void;
 }) {
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -174,6 +182,63 @@ export function AppHeader({
             />
           </svg>
         </button>
+        {/* Split layout selector */}
+        {onSplitLayout && (
+          <div className="split-controls" title="Split Pane Layout">
+            <button
+              className={`split-btn ${splitLayout === "1x1" ? "active" : ""}`}
+              onClick={() => onSplitLayout("1x1")}
+              title="Single Pane (1x1)"
+            >
+              <svg viewBox="0 0 16 16" width="13" height="13">
+                <rect x="2" y="2" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+            </button>
+            <button
+              className={`split-btn ${splitLayout === "1x2" ? "active" : ""}`}
+              onClick={() => onSplitLayout("1x2")}
+              title="Split Vertical (2 columns)"
+            >
+              <svg viewBox="0 0 16 16" width="13" height="13">
+                <rect x="2" y="2" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M8 2v12" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+            </button>
+            <button
+              className={`split-btn ${splitLayout === "2x1" ? "active" : ""}`}
+              onClick={() => onSplitLayout("2x1")}
+              title="Split Horizontal (2 rows)"
+            >
+              <svg viewBox="0 0 16 16" width="13" height="13">
+                <rect x="2" y="2" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M2 8h12" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+            </button>
+            <button
+              className={`split-btn ${splitLayout === "2x2" ? "active" : ""}`}
+              onClick={() => onSplitLayout("2x2")}
+              title="Quad Grid (2x2)"
+            >
+              <svg viewBox="0 0 16 16" width="13" height="13">
+                <rect x="2" y="2" width="12" height="12" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M8 2v12M2 8h12" stroke="currentColor" strokeWidth="1.3" />
+              </svg>
+            </button>
+          </div>
+        )}
+
+        {/* Multi-Exec / Broadcast toggle */}
+        {onToggleBroadcast && (
+          <button
+            className={`broadcast-toggle ${broadcast ? "active" : ""}`}
+            onClick={onToggleBroadcast}
+            title={broadcast ? "Disable Broadcast input mode" : "Enable Multi-Exec / Broadcast input mode (type to all sessions simultaneously)"}
+          >
+            <span className="broadcast-icon">⚡</span>
+            <span>Multi-Exec</span>
+          </button>
+        )}
+
         <button className="primary sm" onClick={onNew} disabled={busy}>
           New Session
         </button>
