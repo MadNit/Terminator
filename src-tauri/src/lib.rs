@@ -692,8 +692,101 @@ async fn download_file(
     }
 }
 
+#[cfg(target_os = "macos")]
+fn disable_press_and_hold() {
+    use std::ffi::c_void;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFPreferencesSetAppValue(
+            key: *const c_void,
+            value: *const c_void,
+            application_id: *const c_void,
+        );
+        fn CFPreferencesAppSynchronize(application_id: *const c_void) -> u8;
+        fn CFStringCreateWithCString(
+            alloc: *const c_void,
+            c_str: *const std::os::raw::c_char,
+            encoding: u32,
+        ) -> *const c_void;
+        fn CFRelease(cf: *const c_void);
+        static kCFBooleanFalse: *const c_void;
+    }
+
+    #[link(name = "objc", kind = "dylib")]
+    extern "C" {
+        fn objc_getClass(name: *const std::os::raw::c_char) -> *mut c_void;
+        fn sel_registerName(name: *const std::os::raw::c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+
+    // On macOS, WKWebView by default enables "Press and Hold" (accent character picker)
+    // for alphanumeric keys. This suppresses continuous key-repeat events when holding
+    // down character keys ('j', 'k', 'l', 'h' in vi/vim), while non-alphanumeric keys
+    // like arrow keys continue repeating. Disabling ApplePressAndHoldEnabled restores
+    // normal terminal key repeat behavior.
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x08000100;
+
+    unsafe {
+        // 1. Set via CoreFoundation preferences for both bundle ID and current app domain
+        let key_c = std::ffi::CString::new("ApplePressAndHoldEnabled").unwrap();
+        let app_c = std::ffi::CString::new("com.terminator.app").unwrap();
+        let key =
+            CFStringCreateWithCString(std::ptr::null(), key_c.as_ptr(), K_CF_STRING_ENCODING_UTF8);
+        let app =
+            CFStringCreateWithCString(std::ptr::null(), app_c.as_ptr(), K_CF_STRING_ENCODING_UTF8);
+
+        if !key.is_null() {
+            if !app.is_null() {
+                CFPreferencesSetAppValue(key, kCFBooleanFalse, app);
+                CFPreferencesAppSynchronize(app);
+                CFRelease(app);
+            }
+            CFRelease(key);
+        }
+
+        // 2. Set in NSUserDefaults in-memory for the running process
+        let ns_user_defaults_class = objc_getClass(c"NSUserDefaults".as_ptr());
+        let ns_string_class = objc_getClass(c"NSString".as_ptr());
+
+        if !ns_user_defaults_class.is_null() && !ns_string_class.is_null() {
+            let standard_user_defaults_sel = sel_registerName(c"standardUserDefaults".as_ptr());
+            let string_with_utf8_sel = sel_registerName(c"stringWithUTF8String:".as_ptr());
+            let set_bool_for_key_sel = sel_registerName(c"setBool:forKey:".as_ptr());
+
+            let msg_send_fn: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+                std::mem::transmute(objc_msgSend as *const ());
+            let defaults = msg_send_fn(ns_user_defaults_class, standard_user_defaults_sel);
+
+            let msg_send_str_fn: unsafe extern "C" fn(
+                *mut c_void,
+                *mut c_void,
+                *const std::os::raw::c_char,
+            ) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
+            let key_str = msg_send_str_fn(
+                ns_string_class,
+                string_with_utf8_sel,
+                c"ApplePressAndHoldEnabled".as_ptr(),
+            );
+
+            if !defaults.is_null() && !key_str.is_null() {
+                let msg_send_set_bool_fn: unsafe extern "C" fn(
+                    *mut c_void,
+                    *mut c_void,
+                    bool,
+                    *mut c_void,
+                ) = std::mem::transmute(objc_msgSend as *const ());
+                msg_send_set_bool_fn(defaults, set_bool_for_key_sel, false, key_str);
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    disable_press_and_hold();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
