@@ -16,6 +16,7 @@ export function AppHeader({
   onToggleSidebar,
   filesOpen,
   onToggleFiles,
+  onOpenHistory,
 }: {
   query: string;
   onQuery: (q: string) => void;
@@ -25,6 +26,7 @@ export function AppHeader({
   onToggleSidebar: () => void;
   filesOpen: boolean;
   onToggleFiles: () => void;
+  onOpenHistory?: () => void;
 }) {
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -141,8 +143,8 @@ export function AppHeader({
         <button className="navlink" disabled title="Not implemented yet">
           Bookmarks
         </button>
-        <button className="navlink" disabled title="Not implemented yet">
-          Stack
+        <button className="navlink" onClick={onOpenHistory} title="Session recordings & command logs (OSC 133)">
+          Recordings & Logs
         </button>
         {/* Mirror of the sidebar glyph, flipped so the rail sits on the right
             and the two toggles read as a matched pair. */}

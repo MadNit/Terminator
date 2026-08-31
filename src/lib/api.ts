@@ -104,6 +104,19 @@ export const closeSession = (id: string) => invoke("close_session", { id });
 export const sessionLogs = (id: string) =>
   invoke<{ cast: string; plain: string }>("session_logs", { id });
 
+export type SessionLogItem = {
+  id: string;
+  dirName: string;
+  timestamp: number;
+  castPath: string;
+  plainPath: string;
+  plainSize: number;
+  castSize: number;
+};
+
+export const listSessionLogs = () => invoke<SessionLogItem[]>("list_session_logs");
+export const readLogFile = (path: string) => invoke<string>("read_log_file", { path });
+export const deleteSessionLog = (dirName: string) => invoke<void>("delete_session_log", { dirName });
 export const logDir = () => invoke<string>("log_dir");
 
 export const secretsBackend = () => invoke<string>("secrets_backend");

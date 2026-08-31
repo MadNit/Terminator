@@ -146,6 +146,107 @@ async fn close_session(state: State<'_, AppState>, id: String) -> Result<(), Str
     state.sessions.close(id).map_err(e)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionLogItem {
+    id: String,
+    dir_name: String,
+    timestamp: u64,
+    cast_path: String,
+    plain_path: String,
+    plain_size: u64,
+    cast_size: u64,
+}
+
+#[tauri::command]
+async fn list_session_logs(state: State<'_, AppState>) -> Result<Vec<SessionLogItem>, String> {
+    let log_dir = state.sessions.log_dir().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut items = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&log_dir) else {
+            return Ok(items);
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let dir_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+
+            let cast_path = path.join("session.cast");
+            let plain_path = path.join("session.log");
+
+            let cast_size = std::fs::metadata(&cast_path).map(|m| m.len()).unwrap_or(0);
+            let plain_size = std::fs::metadata(&plain_path).map(|m| m.len()).unwrap_or(0);
+
+            let parts: Vec<&str> = dir_name.splitn(2, '-').collect();
+            let timestamp = parts
+                .first()
+                .and_then(|ts| ts.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            items.push(SessionLogItem {
+                id: dir_name.clone(),
+                dir_name,
+                timestamp,
+                cast_path: cast_path.to_string_lossy().to_string(),
+                plain_path: plain_path.to_string_lossy().to_string(),
+                plain_size,
+                cast_size,
+            });
+        }
+        items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(items)
+    })
+    .await
+    .map_err(e)?
+}
+
+#[tauri::command]
+async fn read_log_file(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            return Err(format!("File not found: {path}"));
+        }
+        let meta = std::fs::metadata(p).map_err(|err| err.to_string())?;
+        if meta.len() > 5 * 1024 * 1024 {
+            use std::io::Read;
+            let mut file = std::fs::File::open(p).map_err(|err| err.to_string())?;
+            let mut buffer = vec![0u8; 5 * 1024 * 1024];
+            let n = file.read(&mut buffer).map_err(|err| err.to_string())?;
+            let mut s = String::from_utf8_lossy(&buffer[..n]).to_string();
+            s.push_str("\n\n... [Log truncated at 5MB] ...");
+            return Ok(s);
+        }
+        std::fs::read_to_string(p).map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(e)?
+}
+
+#[tauri::command]
+async fn delete_session_log(
+    state: State<'_, AppState>,
+    dir_name: String,
+) -> Result<(), String> {
+    let log_dir = state.sessions.log_dir().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let safe_name = safe_file_name(&dir_name)?;
+        let path = log_dir.join(safe_name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path).map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(e)?
+}
+
 #[tauri::command]
 async fn session_logs(state: State<'_, AppState>, id: String) -> Result<serde_json::Value, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
@@ -823,6 +924,9 @@ pub fn run() {
             resize_session,
             close_session,
             session_logs,
+            list_session_logs,
+            read_log_file,
+            delete_session_log,
             log_dir,
             list_profiles,
             save_profile,

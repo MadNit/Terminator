@@ -7,6 +7,7 @@ import { PasswordPrompt } from "./components/PasswordPrompt";
 import { ProfileView } from "./components/ProfileView";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { AppHeader } from "./components/AppHeader";
+import { SessionHistoryModal } from "./components/SessionHistoryModal";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
 import { connectBlockedReason, describeTarget } from "./lib/transport";
@@ -21,7 +22,6 @@ import {
   secretsBackend,
   vaultStatus,
   type VaultStatus,
-  sessionLogs,
   hasSecret,
   setSecret,
   type Profile,
@@ -95,6 +95,7 @@ export default function App() {
   );
   // File drawer, persisted like the sidebar. Closed by default: it is a tool
   // you reach for, not something that should eat width on first launch.
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(
     () => localStorage.getItem("filesOpen") === "1",
   );
@@ -362,19 +363,7 @@ export default function App() {
     }
   };
 
-  const revealLogs = async () => {
-    const tab = tabs.find((t) => t.key === active);
-    if (!tab?.sessionId) {
-      setStatus("no active session");
-      return;
-    }
-    try {
-      const p = await sessionLogs(tab.sessionId);
-      setStatus(`log: ${p.plain}`);
-    } catch (err) {
-      setStatus(String(err));
-    }
-  };
+
 
   // Render nothing until the vault state is known. Falling through would mount
   // the terminal and spawn a session for a split second before the gate
@@ -409,6 +398,7 @@ export default function App() {
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         filesOpen={filesOpen}
         onToggleFiles={() => setFilesOpen((v) => !v)}
+        onOpenHistory={() => setHistoryOpen(true)}
       />
       <div className={`body ${sidebarOpen ? "" : "collapsed"} ${filesOpen ? "files-open" : ""}`}>
         <Sidebar
@@ -457,10 +447,10 @@ export default function App() {
             <div className="spacer" />
             <button
               className="ghost"
-              onClick={() => void revealLogs()}
-              title="Show this session's log path"
+              onClick={() => setHistoryOpen(true)}
+              title="Open Session Recordings & Command Logs"
             >
-              logs
+              logs & replay
             </button>
           </div>
 
@@ -595,6 +585,10 @@ export default function App() {
           onConfirm={() => void removeProfile(confirmDelete)}
           onCancel={() => setConfirmDelete(null)}
         />
+      )}
+
+      {historyOpen && (
+        <SessionHistoryModal onClose={() => setHistoryOpen(false)} />
       )}
     </div>
   );
