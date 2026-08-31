@@ -87,7 +87,11 @@ Unlike traditional terminal emulators, Terminator is designed around a unified *
 - **Dynamic Parameter Prompts (`{{variable}}`)**: Define placeholders inside commands (e.g. `docker logs -f {{container}} --tail {{lines}}`) and receive interactive prompts to supply values before execution.
 - **Unified Command Palette (⌘K / Ctrl+K)**: Quick launcher to search across all saved connections, snippets, recordings, layout actions, and multi-exec toggles with instant keyboard execution.
 
-### Security & Credential Management
+### Security, Known Hosts & Credential Management
+- **SSH Known Hosts & Host Key Manager GUI**:
+  - **Host Key Verification & TOFU**: Strict verification against known public keys, automatic Trust-On-First-Use (TOFU) recording, and explicit MITM warnings for altered keys.
+  - **Known Hosts Inspection**: Search and inspect trusted host keys, key algorithms (Ed25519, ECDSA, RSA), and cryptographic SHA256 fingerprints.
+  - **Host Key Revocation & Manual Trust**: One-click revocation of stale/rebuilt host keys and manual addition of trusted server public keys.
 - **OS Native Keychain Storage**: Passwords and credentials securely stored using platform APIs (macOS Keychain via Security framework, Windows Credential Manager, Linux Secret Service / DBus).
 - **Encrypted Fallback Vault**: For headless, containerized, or non-keychain environments, Terminator includes a zero-trust encrypted vault using **Argon2id** key derivation and **XChaCha20-Poly1305** AEAD encryption.
 - **Memory Zeroization**: Sensitive cryptographic material and cleartext passwords are scrubbed on drop (`zeroize`).

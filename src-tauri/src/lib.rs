@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{ipc::Channel, Manager, State};
 use terminator_core::{
+    known_hosts::{KnownHostEntry, KnownHostsManager},
     rdp::{RdpConfig, RdpEvent, RdpInput, RdpManager},
     secrets::{Backend, Secrets},
     session::Credentials,
@@ -38,6 +39,7 @@ struct AppState {
     /// Arc so blocking keychain work can be moved onto a blocking thread.
     secrets: Arc<Secrets>,
     tunnels: TunnelManager,
+    known_hosts_path: std::path::PathBuf,
 }
 
 /// Run a blocking secret-store operation off the async runtime.
@@ -468,6 +470,39 @@ async fn active_tunnels(state: State<'_, AppState>) -> Result<Vec<TunnelStatus>,
 // ---------------------------------------------------------------------------
 // Snippets Library
 // ---------------------------------------------------------------------------
+
+
+#[tauri::command]
+async fn list_known_hosts(state: State<'_, AppState>) -> Result<Vec<KnownHostEntry>, String> {
+    KnownHostsManager::list_from_path(&state.known_hosts_path).map_err(e)
+}
+
+#[tauri::command]
+async fn delete_known_host(
+    state: State<'_, AppState>,
+    line_number: usize,
+    host_pattern: String,
+) -> Result<(), String> {
+    KnownHostsManager::delete_entry(&state.known_hosts_path, line_number, &host_pattern).map_err(e)
+}
+
+#[tauri::command]
+async fn add_known_host(
+    state: State<'_, AppState>,
+    host_pattern: String,
+    key_type: String,
+    public_key: String,
+    comment: Option<String>,
+) -> Result<KnownHostEntry, String> {
+    KnownHostsManager::add_entry(
+        &state.known_hosts_path,
+        &host_pattern,
+        &key_type,
+        &public_key,
+        comment.as_deref(),
+    )
+    .map_err(e)
+}
 
 #[tauri::command]
 async fn list_snippets(state: State<'_, AppState>) -> Result<Vec<terminator_core::Snippet>, String> {
@@ -1004,7 +1039,8 @@ pub fn run() {
                 rdp: RdpManager::new(),
                 store,
                 secrets: Arc::new(Secrets::new(data_dir.join("secrets"))),
-                tunnels: TunnelManager::new(known_hosts),
+                tunnels: TunnelManager::new(known_hosts.clone()),
+                known_hosts_path: known_hosts,
             };
             tracing::info!("data dir: {}", data_dir.display());
             warn_if_dev_server_down();
@@ -1043,6 +1079,9 @@ pub fn run() {
             active_tunnels,
             start_tunnel,
             stop_tunnel,
+            list_known_hosts,
+            delete_known_host,
+            add_known_host,
             list_snippets,
             save_snippet,
             delete_snippet,

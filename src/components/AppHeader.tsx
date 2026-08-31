@@ -19,6 +19,7 @@ export function AppHeader({
   onOpenHistory,
   onOpenTunnels,
   onOpenSnippets,
+  onOpenKnownHosts,
   splitLayout,
   onSplitLayout,
   broadcast,
@@ -35,6 +36,7 @@ export function AppHeader({
   onOpenHistory?: () => void;
   onOpenTunnels?: () => void;
   onOpenSnippets?: () => void;
+  onOpenKnownHosts?: () => void;
   splitLayout?: "1x1" | "1x2" | "2x1" | "2x2";
   onSplitLayout?: (layout: "1x1" | "1x2" | "2x1" | "2x2") => void;
   broadcast?: boolean;
@@ -152,6 +154,9 @@ export function AppHeader({
       <nav className="appnav">
         <button className="navlink" onClick={onOpenSnippets} title="Command snippets library & templates (⌘P / Quick Run)">
           📝 Snippets
+        </button>
+        <button className="navlink" onClick={onOpenKnownHosts} title="SSH Known Hosts & Server Key Fingerprints">
+          🛡️ Known Hosts
         </button>
         <button className="navlink" onClick={onOpenHistory} title="Session recordings & command logs (OSC 133)">
           Recordings & Logs

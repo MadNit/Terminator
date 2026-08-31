@@ -81,6 +81,7 @@ export function Sidebar({
   onNew,
   onOpenTunnels,
   onOpenSnippets,
+  onOpenKnownHosts,
   busy,
 }: {
   profiles: Profile[];
@@ -95,6 +96,7 @@ export function Sidebar({
   onNew: () => void;
   onOpenTunnels?: () => void;
   onOpenSnippets?: () => void;
+  onOpenKnownHosts?: () => void;
   busy: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<Set<Kind>>(new Set());
@@ -243,6 +245,16 @@ export function Sidebar({
           >
             <span style={{ fontSize: "13px" }}>📝</span>
             <span>Snippets Library</span>
+          </button>
+        )}
+        {onOpenKnownHosts && (
+          <button
+            className="side-foot-btn"
+            onClick={onOpenKnownHosts}
+            title="Inspect & manage trusted SSH known hosts"
+          >
+            <span style={{ fontSize: "13px" }}>🛡️</span>
+            <span>SSH Known Hosts</span>
           </button>
         )}
         {onOpenTunnels && (

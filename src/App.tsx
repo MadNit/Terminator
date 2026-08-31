@@ -10,6 +10,7 @@ import { AppHeader } from "./components/AppHeader";
 import { SessionHistoryModal } from "./components/SessionHistoryModal";
 import { TunnelManagerModal } from "./components/TunnelManagerModal";
 import { SnippetManagerModal } from "./components/SnippetManagerModal";
+import { KnownHostsModal } from "./components/KnownHostsModal";
 import { CommandPalette } from "./components/CommandPalette";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
@@ -106,6 +107,7 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [tunnelsOpen, setTunnelsOpen] = useState(false);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
+  const [knownHostsOpen, setKnownHostsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(
     () => localStorage.getItem("filesOpen") === "1",
@@ -510,6 +512,7 @@ export default function App() {
         onOpenHistory={() => setHistoryOpen(true)}
         onOpenTunnels={() => setTunnelsOpen(true)}
         onOpenSnippets={() => setSnippetsOpen(true)}
+        onOpenKnownHosts={() => setKnownHostsOpen(true)}
         splitLayout={splitLayout}
         onSplitLayout={setSplitLayout}
         broadcast={broadcast}
@@ -539,6 +542,7 @@ export default function App() {
           onNew={() => setDialog(true)}
           onOpenTunnels={() => setTunnelsOpen(true)}
           onOpenSnippets={() => setSnippetsOpen(true)}
+          onOpenKnownHosts={() => setKnownHostsOpen(true)}
           busy={busy}
         />
 
@@ -847,6 +851,10 @@ export default function App() {
         />
       )}
 
+      {knownHostsOpen && (
+        <KnownHostsModal open={knownHostsOpen} onClose={() => setKnownHostsOpen(false)} />
+      )}
+
       {paletteOpen && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
@@ -876,6 +884,13 @@ export default function App() {
               shortcut: "⇧⌘P",
               icon: "📝",
               perform: () => setSnippetsOpen(true),
+            },
+            {
+              id: "open-known-hosts",
+              title: "SSH Known Hosts & Host Keys",
+              subtitle: "Inspect trusted public keys, fingerprints, and revoke untrusted hosts",
+              icon: "🛡️",
+              perform: () => setKnownHostsOpen(true),
             },
             {
               id: "open-tunnels",

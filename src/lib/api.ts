@@ -228,6 +228,40 @@ export const stopTunnel = (id: string) =>
   invoke<void>("stop_tunnel", { id });
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Known Hosts Manager
+// ---------------------------------------------------------------------------
+
+export type KnownHostEntry = {
+  id: string;
+  line_number: number;
+  host_pattern: string;
+  key_type: string;
+  public_key: string;
+  comment: string | null;
+  fingerprint_sha256: string;
+  fingerprint_md5: string;
+  is_hashed: boolean;
+};
+
+export const listKnownHosts = () => invoke<KnownHostEntry[]>("list_known_hosts");
+
+export const deleteKnownHost = (lineNumber: number, hostPattern: string) =>
+  invoke<void>("delete_known_host", { lineNumber, hostPattern });
+
+export const addKnownHost = (
+  hostPattern: string,
+  keyType: string,
+  publicKey: string,
+  comment?: string | null,
+) =>
+  invoke<KnownHostEntry>("add_known_host", {
+    hostPattern,
+    keyType,
+    publicKey,
+    comment: comment ?? null,
+  });
+
 // Snippets Library
 // ---------------------------------------------------------------------------
 

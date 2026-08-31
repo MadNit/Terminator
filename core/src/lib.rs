@@ -7,6 +7,7 @@
 //! Keeping this boundary means the webview decision stays reversible.
 
 pub mod files;
+pub mod known_hosts;
 #[cfg(feature = "rdp")]
 pub mod rdp;
 pub mod secrets;
@@ -19,6 +20,7 @@ pub mod tunnels;
 pub mod transport;
 pub mod vault;
 
+pub use known_hosts::{KnownHostEntry, KnownHostsManager};
 pub use session::{LogPaths, SessionManager};
 pub use store::Snippet;
 #[cfg(feature = "ssh")]
