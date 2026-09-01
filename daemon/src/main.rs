@@ -13,6 +13,7 @@
 //! Manual stop: send Ctrl-C in the terminal, or call
 //! `POST /shutdown` (not yet implemented -- Session 1d).
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 

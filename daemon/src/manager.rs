@@ -15,12 +15,18 @@ use terminator_core::session::{Credentials, SessionManager};
 use terminator_core::transport::TransportSpec;
 
 /// What an HTTP/SSE client receives per output chunk.
+///
+/// Wire shape is deliberately the same as the Tauri `SessionEvent` that
+/// `src-tauri/src/lib.rs` already publishes to the webview's Tauri
+/// Channel, so a future Tauri-side rewrite can just forward the SSE
+/// event through the same channel without translation.
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum OutputEvent {
-    /// Raw PTY/SSH bytes. Base64 because Tauri IPC / SSE serialise as
-    /// JSON; binary would have to be re-framed.
-    Output { data_b64: String },
+    /// Raw PTY/SSH bytes, base64. Tauri IPC serialises `Vec<u8>` as a
+    /// JSON number array, which is far larger and slower to parse at
+    /// terminal throughput.
+    Output { data: String },
     /// Process exited. Always the last event on a channel.
     Exit,
 }
@@ -45,11 +51,6 @@ pub struct DaemonSessionManager {
     channels: Mutex<std::collections::HashMap<Uuid, broadcast::Sender<OutputEvent>>>,
     /// Wall-clock time each session was opened, for `SessionInfo`.
     opened_at: Mutex<std::collections::HashMap<Uuid, i64>>,
-    /// Sub-set of sessions the daemon reports as alive. Set true on
-    /// open, flipped to false from the exit sink. Wrapped in Arc so
-    /// the on_exit callback (which captures the map by value, not by
-    /// reference) can still update it from its own task.
-    alive: Arc<Mutex<std::collections::HashMap<Uuid, bool>>>,
 }
 
 impl DaemonSessionManager {
@@ -58,7 +59,6 @@ impl DaemonSessionManager {
             core,
             channels: Mutex::new(std::collections::HashMap::new()),
             opened_at: Mutex::new(std::collections::HashMap::new()),
-            alive: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -88,26 +88,21 @@ impl DaemonSessionManager {
         let tx_exit = tx.clone();
         let on_output: Arc<dyn Fn(Bytes) + Send + Sync> = Arc::new(move |data: Bytes| {
             let ev = OutputEvent::Output {
-                data_b64: base64_encode(&data),
+                data: base64_encode(&data),
             };
             // Lagged receivers are a slow HTTP client, not a bug.
             // Dropping the event matches the old Tauri-channel
             // semantics: a subscriber that can't keep up loses data.
             let _ = tx_out.send(ev);
         });
+        // Clone `tx` one last time for the on_exit closure so the
+        // broadcast sender can stay in `self.channels` for later
+        // subscribe() calls. Broadcast senders are cheap to clone
+        // (a refcount bump).
         let on_exit: Arc<dyn Fn() + Send + Sync> = {
             let tx = tx.clone();
-            let alive_map = self.alive.clone();
-            let id_for_exit = id;
             Arc::new(move || {
                 let _ = tx.send(OutputEvent::Exit);
-                // Flip the alive flag too. We can't hold the mutex
-                // across the broadcast send, but spawning a tiny
-                // task for the mutex update is fine.
-                let alive_map = alive_map.clone();
-                tokio::spawn(async move {
-                    alive_map.lock().await.insert(id_for_exit, false);
-                });
             })
         };
 
@@ -118,7 +113,6 @@ impl DaemonSessionManager {
 
         self.channels.lock().await.insert(id, tx);
         self.opened_at.lock().await.insert(id, now_ms());
-        self.alive.lock().await.insert(id, true);
 
         Ok((id, rx))
     }
@@ -156,7 +150,6 @@ impl DaemonSessionManager {
             .unwrap_or_default();
         let mut out = Vec::with_capacity(ids.len());
         let opened = self.opened_at.lock().await;
-        let alive = self.alive.lock().await;
         for id in ids {
             let spec = self
                 .core
@@ -168,7 +161,7 @@ impl DaemonSessionManager {
             out.push(SessionInfo {
                 id: id.to_string(),
                 spec,
-                alive: *alive.get(&id).unwrap_or(&false),
+                alive: true, // core still has the id, so it's alive
                 opened_at_ms: *opened.get(&id).unwrap_or(&0),
             });
         }
@@ -185,7 +178,13 @@ impl DaemonSessionManager {
     }
 
     pub async fn is_alive(&self, id: Uuid) -> bool {
-        *self.alive.lock().await.get(&id).unwrap_or(&false)
+        // "Alive" is just "still tracked by the core". The core
+        // reaps sessions after their process exits, so a
+        // successful `spec` lookup is a reliable signal. We
+        // could also use the transport's is_alive() if we wanted
+        // to detect the brief race between process exit and
+        // reap, but it doesn't matter for the UI.
+        self.core.spec(id).is_some()
     }
 }
 

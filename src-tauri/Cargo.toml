@@ -36,3 +36,9 @@ base64 = "0.22"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-dialog = "2"
 tauri-plugin-drag = "2"
+
+# HTTP client to the long-lived `terminator-daemon` sidecar.
+# `stream` lets us read the SSE response body incrementally; we parse
+# the `data: ...` lines ourselves because pulling in an
+# eventsource-client just for a single endpoint would be overkill.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

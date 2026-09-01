@@ -231,27 +231,14 @@ async fn session_output_sse(
         warn!(%id, "subscribe to unknown session");
         StatusCode::NOT_FOUND
     })?;
-    // Send a one-shot "alive" snapshot as the first event so the
-    // client knows whether the session is already dead (e.g. a
-    // long-running command finished while we were disconnected).
-    let alive = state.manager.is_alive(id).await;
-    let initial = OutputEvent::Output {
-        data_b64: base64_encode_meta(alive),
-    };
-    let stream = broadcast_to_sse(rx, initial);
+    let stream = broadcast_to_sse(rx);
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15))))
 }
 
 fn broadcast_to_sse(
     mut rx: tokio::sync::broadcast::Receiver<OutputEvent>,
-    initial: OutputEvent,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     async_stream::stream! {
-        // Snapshot first; tells the client whether the session is
-        // already dead so it can show a "disconnected" UI before
-        // anything else arrives.
-        let snap = serde_json::to_string(&initial).unwrap_or_default();
-        yield Ok(Event::default().data(snap));
         loop {
             match rx.recv().await {
                 Ok(ev) => {
@@ -288,16 +275,6 @@ fn base64_decode(s: &str) -> Result<Bytes> {
         .decode(s)
         .map(Bytes::from)
         .map_err(|e| anyhow::anyhow!("base64 decode: {e}"))
-}
-
-/// The initial SSE "snapshot" event is a one-byte status flag
-/// (0 = dead, 1 = alive) base64-encoded, so the protocol stays
-/// uniform. Tauri side will decode it the same way as a real
-/// output chunk and check the length to learn the status.
-fn base64_encode_meta(alive: bool) -> String {
-    use base64::Engine;
-    let byte: u8 = if alive { 1 } else { 0 };
-    base64::engine::general_purpose::STANDARD.encode([byte])
 }
 
 fn now_ms() -> i64 {

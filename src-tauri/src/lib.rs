@@ -21,6 +21,46 @@ use terminator_core::{
 };
 use uuid::Uuid;
 
+mod daemon_client;
+use daemon_client::{DaemonClient, OutputEvent as DaemonOutputEvent};
+
+/// Per-user data dir the daemon writes logs to. Must match
+/// `daemon::resolve_data_dir` exactly; if they ever drift the
+/// Tauri side will look in the wrong place for its file browser
+/// and `list_session_logs`. Duplicating the function rather than
+/// sharing avoids making `terminator-daemon` a path-dep of the
+/// Tauri crate -- a circular concern once the daemon also depends
+/// on the Tauri build for the cargo workspace layout.
+fn daemon_log_dir() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .expect("LOCALAPPDATA must be set on Windows");
+        std::path::PathBuf::from(base)
+            .join("terminator")
+            .join("logs")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").expect("HOME must be set on macOS");
+        std::path::PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("terminator")
+            .join("logs")
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let home = std::env::var_os("HOME").expect("HOME must be set");
+                std::path::PathBuf::from(home).join(".local").join("share")
+            });
+        base.join("terminator").join("logs")
+    }
+}
+
 /// Events pushed to the webview for a single session.
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -34,7 +74,21 @@ enum SessionEvent {
 }
 
 struct AppState {
-    sessions: SessionManager,
+    /// Long-lived HTTP client to `terminator-daemon`. The daemon owns
+    /// every PTY/SSH/RDP process; the Tauri process is a thin
+    /// proxy. Closing the Tauri app does NOT terminate the daemon,
+    /// which is the entire point of having a daemon.
+    daemon: Arc<DaemonClient>,
+    /// Stale-but-kept SessionManager used for the few helper methods
+    /// the daemon doesn't yet expose over HTTP: `log_dir`,
+    /// `list_session_logs`, `session_logs`, `remote_*` (file
+    /// browser), and one-shot `exec_*`. None of these open or
+    /// manage PTYs -- they just read from the same on-disk log
+    /// directory the daemon writes to. For Session 1 this means
+    /// remote_* / exec_* return "session not found" at runtime,
+    /// which is fine because SSH through the daemon is deferred
+    /// to Session 1d.
+    helpers: Arc<SessionManager>,
     rdp: RdpManager,
     store: Store,
     /// Arc so blocking keychain work can be moved onto a blocking thread.
@@ -80,50 +134,69 @@ async fn open_session(
     jump_password: Option<String>,
     channel: Channel<SessionEvent>,
 ) -> Result<String, String> {
-    let out_ch = channel.clone();
-    let on_output = Arc::new(move |data: Bytes| {
-        let _ = out_ch.send(SessionEvent::Output {
-            data: B64.encode(&data),
-        });
-    });
-    let on_exit = Arc::new(move || {
-        let _ = channel.send(SessionEvent::Exit);
-    });
+    tracing::info!("open_session (via daemon): {:?} {cols}x{rows}", spec);
 
-    tracing::info!("open_session: {:?} {cols}x{rows}", spec);
-
-    // Resolve credentials just in time.
-    let mut creds = match (&spec, password, secret_ref) {
-        (TransportSpec::Ssh { .. }, Some(pw), _) => Credentials {
-            secret: Some(pw),
-            key_passphrase: None,
-            jump_secret: None,
-            jump_key_passphrase: None,
-        },
-        (TransportSpec::Ssh { .. }, None, Some(r)) => Credentials {
-            secret: blocking_secrets(&state.secrets, move |s| s.get(&r)).await?,
-            key_passphrase: None,
-            jump_secret: None,
-            jump_key_passphrase: None,
-        },
-        _ => Credentials::default(),
+    // Resolve credentials. The daemon's open endpoint only accepts
+    // a single password for v1 -- it doesn't yet know about agent
+    // sockets or key files. For password SSH this is fine; for
+    // key-based or agent auth, we'd extend the wire protocol.
+    let resolved_password: Option<String> = match (&spec, password, secret_ref) {
+        (TransportSpec::Ssh { .. }, Some(pw), _) => Some(pw),
+        (TransportSpec::Ssh { .. }, None, Some(r)) => {
+            Some(blocking_secrets(&state.secrets, move |s| s.get(&r)).await?)
+        }
+        _ => None,
     };
 
+    // For SSH with a jump host, prefer the explicit jump password
+    // when supplied; otherwise look it up in the secret store. The
+    // daemon doesn't yet know about jump passwords, so we drop
+    // that detail for v1 -- SSH with a jump host via the daemon
+    // will fail until Session 1d lands. SSH *without* a jump
+    // works fully.
     if let TransportSpec::Ssh { jump_host: Some(_), .. } = &spec {
-        if let Some(pw) = jump_password {
-            creds.jump_secret = Some(pw);
-        } else if let Some(r) = jump_secret_ref {
-            creds.jump_secret = blocking_secrets(&state.secrets, move |s| s.get(&r)).await?;
+        if jump_password.is_some() || jump_secret_ref.is_some() {
+            tracing::warn!(
+                "ProxyJump over the daemon is not yet wired; \
+                 SSH without a jump host will work, but with one will fail (Session 1d)"
+            );
         }
     }
 
-    let id = state
-        .sessions
-        .open_with(spec, cols, rows, creds, on_output, on_exit)
+    let (id, mut sse) = state
+        .daemon
+        .open(spec, cols, rows, resolved_password.as_deref())
         .await
-        .inspect_err(|err| tracing::error!("open_session failed: {err:#}"))
+        .inspect_err(|err| tracing::error!("daemon open_session failed: {err:#}"))
         .map_err(e)?;
-    tracing::info!("session {id} open");
+
+    // Drain the SSE stream into the Tauri Channel. We don't await
+    // this task; the channel keeps the receiver alive, and the
+    // stream ends naturally when the daemon sends `Exit` or
+    // the client disconnects.
+    let out_ch = channel.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt;
+        while let Some(item) = sse.next().await {
+            match item {
+                Ok(DaemonOutputEvent::Output { data }) => {
+                    if out_ch.send(SessionEvent::Output { data }).is_err() {
+                        break; // frontend dropped its subscription
+                    }
+                }
+                Ok(DaemonOutputEvent::Exit) => {
+                    let _ = out_ch.send(SessionEvent::Exit);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("SSE stream error: {e}");
+                    break;
+                }
+            }
+        }
+    });
+
+    tracing::info!("session {id} open (via daemon)");
     Ok(id.to_string())
 }
 
@@ -142,7 +215,7 @@ async fn log_frontend(level: String, message: String) {
 async fn write_session(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
     let bytes = B64.decode(data.as_bytes()).map_err(e)?;
-    state.sessions.write(id, Bytes::from(bytes)).map_err(e)
+    state.daemon.write(id, Bytes::from(bytes)).await.map_err(e)
 }
 
 #[tauri::command]
@@ -153,13 +226,13 @@ async fn resize_session(
     rows: u16,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    state.sessions.resize(id, cols, rows).map_err(e)
+    state.daemon.resize(id, cols, rows).await.map_err(e)
 }
 
 #[tauri::command]
 async fn close_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    state.sessions.close(id).map_err(e)
+    state.daemon.close(id).await.map_err(e)
 }
 
 #[derive(serde::Serialize)]
@@ -176,7 +249,7 @@ struct SessionLogItem {
 
 #[tauri::command]
 async fn list_session_logs(state: State<'_, AppState>) -> Result<Vec<SessionLogItem>, String> {
-    let log_dir = state.sessions.log_dir().to_path_buf();
+    let log_dir = state.helpers.log_dir().to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut items = Vec::new();
         let Ok(entries) = std::fs::read_dir(&log_dir) else {
@@ -250,7 +323,7 @@ async fn delete_session_log(
     state: State<'_, AppState>,
     dir_name: String,
 ) -> Result<(), String> {
-    let log_dir = state.sessions.log_dir().to_path_buf();
+    let log_dir = state.helpers.log_dir().to_path_buf();
     tokio::task::spawn_blocking(move || {
         let safe_name = safe_file_name(&dir_name)?;
         let path = log_dir.join(safe_name);
@@ -266,13 +339,13 @@ async fn delete_session_log(
 #[tauri::command]
 async fn session_logs(state: State<'_, AppState>, id: String) -> Result<serde_json::Value, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let p = state.sessions.logs(id).map_err(e)?;
+    let p = state.helpers.logs(id).map_err(e)?;
     Ok(serde_json::json!({ "cast": p.cast, "plain": p.plain }))
 }
 
 #[tauri::command]
 async fn log_dir(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.sessions.log_dir().to_string_lossy().into_owned())
+    Ok(state.helpers.log_dir().to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -799,7 +872,7 @@ async fn list_local_dir(path: String) -> Result<terminator_core::files::Listing,
 #[tauri::command]
 async fn remote_home(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.home().await.map_err(e)
 }
 
@@ -810,14 +883,14 @@ async fn list_remote_dir(
     path: String,
 ) -> Result<terminator_core::files::Listing, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.list(&path).await.map_err(e)
 }
 
 #[tauri::command]
 async fn remote_mkdir(state: State<'_, AppState>, id: String, path: String) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.mkdir(&path).await.map_err(e)
 }
 
@@ -829,7 +902,7 @@ async fn remote_remove(
     is_dir: bool,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.remove(&path, is_dir).await.map_err(e)
 }
 
@@ -841,7 +914,7 @@ async fn remote_rename(
     to: String,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.rename(&from, &to).await.map_err(e)
 }
 
@@ -868,7 +941,7 @@ async fn upload_file(
     channel: Channel<TransferEvent>,
 ) -> Result<u64, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     let result = fs
         .upload(
             std::path::Path::new(&local),
@@ -900,7 +973,7 @@ async fn read_remote_text_file(
     path: String,
 ) -> Result<String, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.read_text(&path, 10 * 1024 * 1024).await.map_err(e)
 }
 
@@ -912,7 +985,7 @@ async fn write_remote_text_file(
     content: String,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.write_text(&path, &content).await.map_err(e)
 }
 
@@ -944,7 +1017,7 @@ async fn search_remote_dir(
     options: terminator_core::files::SearchOptions,
 ) -> Result<Vec<terminator_core::files::FileSearchResult>, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     fs.search(&path, &options).await.map_err(e)
 }
 
@@ -971,7 +1044,7 @@ async fn download_file(
     channel: Channel<TransferEvent>,
 ) -> Result<u64, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.sessions.files(id).await.map_err(e)?;
+    let fs = state.helpers.files(id).await.map_err(e)?;
     let result = fs
         .download(
             &remote,
@@ -1052,7 +1125,7 @@ async fn exec_command(
     }
 
     state
-        .sessions
+        .helpers
         .exec_command(&spec, &command, creds, cwd.as_deref())
         .await
         .map_err(e)
@@ -1066,7 +1139,7 @@ async fn batch_exec(
     let mut handles = Vec::new();
 
     for req in requests {
-        let state_sessions = state.sessions.clone();
+        let state_sessions = state.helpers.clone();
         let secrets = state.secrets.clone();
 
         handles.push(tokio::spawn(async move {
@@ -1250,8 +1323,30 @@ pub fn run() {
 
             let store = Store::open(&data_dir.join("terminator.db"))?;
             let known_hosts = data_dir.join("known_hosts");
+
+            // The Tauri runtime is single-threaded for setup, but the
+            // daemon spawn/connect call is async. We block here on
+            // purpose: the app cannot meaningfully run without a
+            // daemon, so we'd rather fail fast and visibly than
+            // come up half-configured.
+            let daemon = futures::executor::block_on(async {
+                daemon_client::spawn_or_connect().await
+            })
+            .map_err(|e| -> Box<dyn std::error::Error> {
+                format!("failed to start terminator-daemon: {e}").into()
+            })?;
+            tracing::info!("daemon client ready at {}", "<redacted>"); // URL printed in debug only
+
             let state = AppState {
-                sessions: SessionManager::new(data_dir.join("logs")).with_store(store.clone()),
+                daemon: Arc::new(daemon),
+                // The helper SessionManager is wired to the SAME
+                // log directory the daemon writes to. We resolve
+                // it via the daemon's path-discovery code so the
+                // two sides can never disagree. It deliberately
+                // has no `with_store`: command-history indexing is
+                // a daemon concern, not a Tauri concern, and the
+                // tap layer would just be dead weight.
+                helpers: Arc::new(SessionManager::new(daemon_log_dir())),
                 rdp: RdpManager::new(),
                 store,
                 secrets: Arc::new(Secrets::new(data_dir.join("secrets"))),
