@@ -63,10 +63,12 @@ html, body, #root {
 .appbar {
   display: flex;
   align-items: center;
-  gap: 16px;
+  column-gap: 16px;
+  row-gap: 6px;
+  flex-wrap: wrap;
   flex: 0 0 auto;
-  height: 48px;
-  padding: 0 14px;
+  min-height: 48px;
+  padding: 6px 14px;
   background: var(--ink-800);
   border-bottom: 1px solid var(--ink-600);
   user-select: none;
@@ -154,10 +156,21 @@ html, body, #root {
 .appnav {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
+  column-gap: 8px;
+  row-gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: flex-end;
 }
+/* Each navlink has an emoji + a label. Hiding the label on narrow screens
+   collapses the bar to icon-only mode without losing the tooltip. */
+.nav-emoji {
+  display: inline-block;
+  line-height: 1;
+  font-size: 13px;
+}
+.nav-label { white-space: nowrap; }
 .navlink {
   appearance: none;
   background: none;
@@ -1864,4 +1877,40 @@ button.primary:disabled { opacity: 0.5; cursor: default; }
   border-color: var(--lime);
   color: var(--lime);
   font-weight: 600;
+}
+
+/* ============================================================
+   Responsive header — collapses text labels and trims chrome
+   as the window narrows. Tooltips still show the full name.
+   ============================================================ */
+
+/* Medium: drop the brand text and the ⌘K hint; keep all icons + labels. */
+@media (max-width: 1100px) {
+  .brand-name { display: none; }
+  .quick-kbd  { display: none; }
+  .quick      { max-width: 280px; }
+}
+
+/* Narrow: drop labels, go icon-only. Also tighten gaps and padding. */
+@media (max-width: 900px) {
+  .appbar { column-gap: 8px; padding: 6px 10px; }
+  .appnav { column-gap: 4px; }
+  .nav-label { display: none; }
+  .navlink   { padding: 4px; }
+  .nav-emoji { font-size: 15px; }
+  .broadcast-toggle { padding: 4px 6px; }
+  .broadcast-toggle .nav-label { display: none; }
+  .primary.sm { padding: 4px 8px; }
+  .primary.sm .nav-label { display: none; }
+  .split-btn  { width: 24px; height: 24px; }
+  .quick      { max-width: 200px; }
+  .avatar     { display: none; }
+}
+
+/* Very narrow: shrink the search, drop the brand mark too. */
+@media (max-width: 680px) {
+  .brand-mark { display: none; }
+  .quick      { max-width: 140px; }
+  .panel-toggle { display: none; }  /* hide sidebar toggle; keep files toggle */
+  .appbar { padding: 6px 8px; }
 }

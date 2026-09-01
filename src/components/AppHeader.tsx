@@ -165,34 +165,44 @@ export function AppHeader({
 
       <nav className="appnav">
         <button className="navlink" onClick={onOpenMonitor} title="Remote System Resource Monitor (CPU, RAM, Disk, Processes)">
-          📊 Monitor
+          <span className="nav-emoji" aria-hidden="true">📊</span>
+          <span className="nav-label">Monitor</span>
         </button>
         <button className="navlink" onClick={onOpenBatchRunner} title="Multi-Host Batch Command Execution">
-          🚀 Batch
+          <span className="nav-emoji" aria-hidden="true">🚀</span>
+          <span className="nav-label">Batch</span>
         </button>
         <button className="navlink" onClick={onOpenThemes} title="Terminal Themes & Font Customizer">
-          🎨 Themes
+          <span className="nav-emoji" aria-hidden="true">🎨</span>
+          <span className="nav-label">Themes</span>
         </button>
         <button className="navlink" onClick={onOpenEditor} title="Open in-app Mini-IDE Code Editor (⌘E)">
-          📝 Mini-IDE
+          <span className="nav-emoji" aria-hidden="true">📝</span>
+          <span className="nav-label">Mini-IDE</span>
         </button>
         <button className="navlink" onClick={onOpenSnippets} title="Command snippets library & templates (⌘P / Quick Run)">
-          ⚡ Snippets
+          <span className="nav-emoji" aria-hidden="true">⚡</span>
+          <span className="nav-label">Snippets</span>
         </button>
         <button className="navlink" onClick={onOpenTriggers} title="Terminal Output Triggers & Desktop Alerts">
-          🔔 Alerts
+          <span className="nav-emoji" aria-hidden="true">🔔</span>
+          <span className="nav-label">Alerts</span>
         </button>
         <button className="navlink" onClick={onOpenBackup} title="Import & Export Profiles, Tunnels, Snippets (JSON)">
-          📦 Backup
+          <span className="nav-emoji" aria-hidden="true">📦</span>
+          <span className="nav-label">Backup</span>
         </button>
         <button className="navlink" onClick={onOpenKnownHosts} title="SSH Known Hosts & Server Key Fingerprints">
-          🛡️ Known Hosts
+          <span className="nav-emoji" aria-hidden="true">🛡️</span>
+          <span className="nav-label">Known Hosts</span>
         </button>
         <button className="navlink" onClick={onOpenHistory} title="Session recordings & command logs (OSC 133)">
-          Recordings & Logs
+          <span className="nav-emoji" aria-hidden="true">📼</span>
+          <span className="nav-label">Recordings &amp; Logs</span>
         </button>
         <button className="navlink prominent" onClick={onOpenTunnels} title="SSH Port Forwarding & Tunnel Manager (-L, -R, -D)">
-          ⚡ Port Tunnels
+          <span className="nav-emoji" aria-hidden="true">⚡</span>
+          <span className="nav-label">Port Tunnels</span>
         </button>
         {/* Mirror of the sidebar glyph, flipped so the rail sits on the right
             and the two toggles read as a matched pair. */}
@@ -275,12 +285,13 @@ export function AppHeader({
             title={broadcast ? "Disable Broadcast input mode" : "Enable Multi-Exec / Broadcast input mode (type to all sessions simultaneously)"}
           >
             <span className="broadcast-icon">⚡</span>
-            <span>Multi-Exec</span>
+            <span className="nav-label">Multi-Exec</span>
           </button>
         )}
 
         <button className="primary sm" onClick={onNew} disabled={busy}>
-          New Session
+          <span className="nav-emoji" aria-hidden="true">＋</span>
+          <span className="nav-label">New Session</span>
         </button>
         <span className="avatar" title="Local user" aria-hidden="true">
           T
