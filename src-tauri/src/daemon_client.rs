@@ -19,6 +19,7 @@ use tokio::process::Command;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use terminator_core::session::Credentials;
 use terminator_core::transport::TransportSpec;
 
 /// Wire shape of the daemon's `OutputEvent` enum. Kept identical to
@@ -49,18 +50,23 @@ impl DaemonClient {
         spec: TransportSpec,
         cols: u16,
         rows: u16,
-        password: Option<&str>,
+        creds: &Credentials,
     ) -> Result<(Uuid, SseStream)> {
         let body = serde_json::json!({
             "spec": spec,
             "cols": cols,
             "rows": rows,
-            "password": password,
+            "password": creds.secret,
+            "key_passphrase": creds.key_passphrase,
+            "jump_password": creds.jump_secret,
+            "jump_key_passphrase": creds.jump_key_passphrase,
         });
+        let body = serde_json::to_string(&body).context("serialize open body")?;
         let resp = self
             .http
             .post(format!("{}/sessions", self.base_url))
-            .json(&body)
+            .header("content-type", "application/json")
+            .body(body)
             .send()
             .await
             .context("POST /sessions")?;
@@ -94,12 +100,14 @@ impl DaemonClient {
 
     pub async fn write(&self, id: Uuid, data: Bytes) -> Result<()> {
         let url = format!("{}/sessions/{}/input", self.base_url, id);
+        let encoded = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&data)
+        };
         let resp = self
             .http
             .post(&url)
-            .json(&serde_json::json!({
-                "data_b64": base64::engine::general_purpose::STANDARD.encode(&data),
-            }))
+            .json(&serde_json::json!({ "data_b64": encoded }))
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
@@ -195,8 +203,10 @@ impl futures::stream::Stream for SseStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         loop {
             // Try to parse a complete event from the buffer first.
-            if let Some(event) = take_event(&mut self.buffer) {
-                return std::task::Poll::Ready(Some(Ok(event)));
+            match take_event(&mut self.buffer) {
+                Some(Ok(event)) => return std::task::Poll::Ready(Some(Ok(event))),
+                Some(Err(e)) => return std::task::Poll::Ready(Some(Err(e))),
+                None => {}
             }
             if self.done {
                 return std::task::Poll::Ready(None);
@@ -224,20 +234,22 @@ impl futures::stream::Stream for SseStream {
 /// Pull one complete SSE event from `buf`. Returns `None` if the
 /// buffer doesn't yet end with a blank line. The `data:` field is
 /// the only one we care about; everything else is ignored.
-fn take_event(buf: &mut Vec<u8>) -> Option<OutputEvent> {
+fn take_event(buf: &mut Vec<u8>) -> Option<Result<OutputEvent>> {
     // SSE events are delimited by a blank line. Find the first
     // double-newline pair.
     let sep = find_double_newline(buf)?;
-    let event_bytes = &buf[..sep];
+    // Copy the event bytes out before draining, since the drain
+    // needs a mutable borrow that conflicts with the slice.
+    let event_bytes = buf[..sep].to_vec();
     // Advance past the separator (the "\n\n" itself).
-    let sep_len = if buf.starts_with(b"\r\n\r\n", sep) {
+    let sep_len = if buf[sep..].starts_with(b"\r\n\r\n") {
         4
     } else {
         2
     };
     let _ = buf.drain(..sep + sep_len);
 
-    let event_str = match std::str::from_utf8(event_bytes) {
+    let event_str = match std::str::from_utf8(&event_bytes) {
         Ok(s) => s,
         Err(_) => return None,
     };
@@ -257,10 +269,8 @@ fn take_event(buf: &mut Vec<u8>) -> Option<OutputEvent> {
     if data.is_empty() {
         return None;
     }
-    match serde_json::from_str::<OutputEvent>(&data) {
-        Ok(ev) => Some(ev),
-        Err(e) => Some(Err(anyhow!("malformed SSE event: {e}; data={data}"))),
-    }
+    Some(serde_json::from_str::<OutputEvent>(&data)
+        .map_err(|e| anyhow!("malformed SSE event: {e}; data={data}")))
 }
 
 fn find_double_newline(buf: &[u8]) -> Option<usize> {

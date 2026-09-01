@@ -85,7 +85,6 @@ impl DaemonSessionManager {
         // `on_output` and `on_exit` run on whatever task the core
         // uses to drain the transport, so we have to be Send+Sync.
         let tx_out = tx.clone();
-        let tx_exit = tx.clone();
         let on_output: Arc<dyn Fn(Bytes) + Send + Sync> = Arc::new(move |data: Bytes| {
             let ev = OutputEvent::Output {
                 data: base64_encode(&data),

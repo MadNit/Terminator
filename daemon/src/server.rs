@@ -55,9 +55,22 @@ struct OpenRequest {
     spec: TransportSpec,
     cols: u16,
     rows: u16,
-    /// Optional. Only SSH sessions need this; local sessions ignore it.
+    /// SSH password. Used when `spec.kind == "ssh"` and
+    /// `spec.auth.method == "password"`. Local sessions ignore it.
     #[serde(default)]
     password: Option<String>,
+    /// Passphrase for the SSH key file. Used when
+    /// `spec.auth.method == "key"`. The key file path itself is
+    /// already in the spec, so we only carry the secret across
+    /// the wire.
+    #[serde(default)]
+    key_passphrase: Option<String>,
+    /// Same two fields, but for the jump host. A `None` jump host
+    /// means these are ignored.
+    #[serde(default)]
+    jump_password: Option<String>,
+    #[serde(default)]
+    jump_key_passphrase: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,7 +175,9 @@ async fn open_session(
 ) -> Result<(StatusCode, Json<OpenResponse>), (StatusCode, String)> {
     let creds = Credentials {
         secret: req.password,
-        ..Default::default()
+        key_passphrase: req.key_passphrase,
+        jump_secret: req.jump_password,
+        jump_key_passphrase: req.jump_key_passphrase,
     };
     let (id, _rx) = state
         .manager

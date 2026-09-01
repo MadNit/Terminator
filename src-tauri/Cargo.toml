@@ -42,3 +42,7 @@ tauri-plugin-drag = "2"
 # the `data: ...` lines ourselves because pulling in an
 # eventsource-client just for a single endpoint would be overkill.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# `futures::StreamExt` for the `next()` calls on reqwest's byte
+# stream, and for the broadcast::Receiver stream we wrap as SseStream.
+futures = { workspace = true }

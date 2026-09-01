@@ -136,36 +136,29 @@ async fn open_session(
 ) -> Result<String, String> {
     tracing::info!("open_session (via daemon): {:?} {cols}x{rows}", spec);
 
-    // Resolve credentials. The daemon's open endpoint only accepts
-    // a single password for v1 -- it doesn't yet know about agent
-    // sockets or key files. For password SSH this is fine; for
-    // key-based or agent auth, we'd extend the wire protocol.
-    let resolved_password: Option<String> = match (&spec, password, secret_ref) {
-        (TransportSpec::Ssh { .. }, Some(pw), _) => Some(pw),
-        (TransportSpec::Ssh { .. }, None, Some(r)) => {
-            Some(blocking_secrets(&state.secrets, move |s| s.get(&r)).await?)
-        }
-        _ => None,
-    };
-
-    // For SSH with a jump host, prefer the explicit jump password
-    // when supplied; otherwise look it up in the secret store. The
-    // daemon doesn't yet know about jump passwords, so we drop
-    // that detail for v1 -- SSH with a jump host via the daemon
-    // will fail until Session 1d lands. SSH *without* a jump
-    // works fully.
-    if let TransportSpec::Ssh { jump_host: Some(_), .. } = &spec {
-        if jump_password.is_some() || jump_secret_ref.is_some() {
-            tracing::warn!(
-                "ProxyJump over the daemon is not yet wired; \
-                 SSH without a jump host will work, but with one will fail (Session 1d)"
-            );
-        }
+    // Resolve all four credential fields up front. Order of
+    // preference is the same one `core::session` used: explicit
+    // one-shot secret > keychain reference > None. We resolve
+    // even for non-SSH specs because resolving is cheap and the
+    // daemon will simply ignore fields it doesn't need.
+    let mut creds = Credentials::default();
+    if let Some(pw) = password {
+        creds.secret = Some(pw);
+    } else if let Some(r) = secret_ref {
+        // `blocking_secrets` flattens to `Result<Option<String>, String>`
+        // (the outer is the spawn-blocking dispatch; the inner
+        // Option is the lookup outcome). Missing ref -> None;
+        // lookup error -> propagate via `?`. The daemon will then
+        // try public-key / agent auth if the SSH method allows it.
+        creds.secret = blocking_secrets(&state.secrets, move |s| s.get(&r)).await?;
     }
-
-    let (id, mut sse) = state
+    if let Some(pw) = jump_password {
+        creds.jump_secret = Some(pw);
+    } else if let Some(r) = jump_secret_ref {
+        creds.jump_secret = blocking_secrets(&state.secrets, move |s| s.get(&r)).await?;
+    }    let (id, mut sse) = state
         .daemon
-        .open(spec, cols, rows, resolved_password.as_deref())
+        .open(spec, cols, rows, &creds)
         .await
         .inspect_err(|err| tracing::error!("daemon open_session failed: {err:#}"))
         .map_err(e)?;
