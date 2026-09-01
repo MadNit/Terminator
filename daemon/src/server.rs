@@ -40,10 +40,16 @@ use terminator_core::session::Credentials;
 use terminator_core::transport::TransportSpec;
 
 use crate::manager::{DaemonSessionManager, OutputEvent, SessionInfo};
+use crate::rdp::{DaemonRdpManager, RdpInfo};
 
 #[derive(Clone)]
 struct AppState {
     manager: Arc<DaemonSessionManager>,
+    /// Live RDP sessions + per-session broadcast channels. A
+    /// Tauri UI crash no longer takes the remote desktop with
+    /// it; this is the same survival guarantee the PTY/SSH
+    /// sessions have had since Session 1.
+    rdp: Arc<DaemonRdpManager>,
     /// Wall-clock time the daemon started. Used by the health check
     /// and any future `/stats` endpoint.
     started_at_ms: i64,
@@ -97,9 +103,14 @@ struct ResizeRequest {
     rows: u16,
 }
 
-pub fn router(manager: Arc<DaemonSessionManager>, log_dir: std::path::PathBuf) -> Router {
+pub fn router(
+    manager: Arc<DaemonSessionManager>,
+    rdp: Arc<DaemonRdpManager>,
+    log_dir: std::path::PathBuf,
+) -> Router {
     let state = AppState {
         manager,
+        rdp,
         started_at_ms: now_ms(),
         log_dir: Arc::new(log_dir),
     };
@@ -135,6 +146,17 @@ pub fn router(manager: Arc<DaemonSessionManager>, log_dir: std::path::PathBuf) -
         .route("/session_logs/:dir_name", delete(delete_session_log_route))
         .route("/log_file", get(log_file_route))
         .route("/sessions/:id/logs", get(session_log_paths_route))
+        // RDP. Same "daemon owns the live session" pattern
+        // as the PTY/SSH routes above; a Tauri UI crash no
+        // longer takes the remote desktop with it. The
+        // `Output` SSE stream is a stream of `RdpEvent`s
+        // (`Frame { rgba }` / `Resized` / `Disconnected`)
+        // rather than raw bytes.
+        .route("/rdp", get(rdp_list).post(rdp_open))
+        .route("/rdp/:id", get(rdp_get).delete(rdp_close))
+        .route("/rdp/:id/output", get(rdp_output_sse))
+        .route("/rdp/:id/input", post(rdp_input))
+        .route("/rdp/:id/resize", post(rdp_resize))
         .with_state(state)
 }
 
@@ -644,6 +666,162 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// RDP
+// ---------------------------------------------------------------------------
+//
+// `RdpEvent` already has the same `#[serde(tag = "type", rename_all =
+// "camelCase")]` shape the PTY `OutputEvent` uses, so the SSE wire
+// format is identical: `data: {"type":"frame",...}\n\n`. The Tauri
+// side deserializes the same way, just into `RdpEvent` instead of
+// `OutputEvent`.
+
+#[derive(Debug, serde::Serialize)]
+struct RdpOpened {
+    id: String,
+    width: u16,
+    height: u16,
+}
+
+async fn rdp_open(
+    State(state): State<AppState>,
+    Json(cfg): Json<terminator_core::rdp::RdpConfig>,
+) -> Result<Json<RdpOpened>, (StatusCode, String)> {
+    let user = cfg.user.clone();
+    let host = cfg.host.clone();
+    let port = cfg.port;
+    let (id, width, height, _rx) = state
+        .rdp
+        .open(cfg)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    tracing::info!(%id, user, host, port, "rdp session open");
+    Ok(Json(RdpOpened {
+        id: id.to_string(),
+        width,
+        height,
+    }))
+}
+
+async fn rdp_list(State(state): State<AppState>) -> Json<Vec<RdpInfo>> {
+    Json(state.rdp.list().await)
+}
+
+async fn rdp_get(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<RdpInfo>, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    state
+        .rdp
+        .get(id)
+        .await
+        .map(Json)
+        .map_err(|e| rdp_status_for(&e))
+}
+
+async fn rdp_close(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    state
+        .rdp
+        .close(id)
+        .await
+        .map_err(|e| rdp_status_for(&e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rdp_input(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(ops): Json<Vec<terminator_core::rdp::RdpInput>>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    state
+        .rdp
+        .input(id, ops)
+        .await
+        .map_err(|e| rdp_status_for(&e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct RdpResizeBody {
+    width: u16,
+    height: u16,
+}
+
+async fn rdp_resize(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RdpResizeBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    state
+        .rdp
+        .resize(id, body.width, body.height)
+        .await
+        .map_err(|e| rdp_status_for(&e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rdp_output_sse(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<
+    Sse<impl Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, String),
+> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let rx = state
+        .rdp
+        .subscribe(id)
+        .await
+        .map_err(|e| rdp_status_for(&e))?;
+    Ok(Sse::new(rdp_broadcast_to_sse(rx))
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15))))
+}
+
+/// RDP has no scrollback buffer (the server resends frames on
+/// reattach), so the SSE stream is just live events.
+fn rdp_broadcast_to_sse(
+    mut rx: tokio::sync::broadcast::Receiver<terminator_core::rdp::RdpEvent>,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let payload = serde_json::to_string(&ev).unwrap_or_default();
+                    yield Ok(Event::default().data(payload));
+                }
+                Err(RecvError::Lagged(_)) => {
+                    // A slow webview dropped a frame. The next
+                    // `Frame` we receive (typically a few ms
+                    // later) repaints the whole dirty region
+                    // and catches the renderer up, so we just
+                    // log and continue.
+                    warn!("rdp SSE client lagged; frame dropped");
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+    }
+}
+
+/// Pick a sensible HTTP status from an `RdpManager` error.
+/// Currently the only one we look for is "no such rdp
+/// session" -- everything else is a 500.
+fn rdp_status_for(e: &anyhow::Error) -> (StatusCode, String) {
+    let s = format!("{e:#}");
+    if s.contains("no such rdp session") {
+        (StatusCode::NOT_FOUND, s)
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, s)
+    }
 }
 
 // ---------------------------------------------------------------------------

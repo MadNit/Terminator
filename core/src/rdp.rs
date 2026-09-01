@@ -59,7 +59,7 @@ use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use ironrdp_tokio::{split_tokio_framed, TokioFramed};
 
 /// What to connect to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RdpConfig {
     pub host: String,
     pub port: u16,
@@ -71,7 +71,7 @@ pub struct RdpConfig {
 }
 
 /// What the UI sends us.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RdpInput {
     MouseMove {
@@ -104,7 +104,7 @@ pub enum RdpInput {
 }
 
 /// What we send the UI.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RdpEvent {
     /// A dirty rectangle, tightly packed RGBA, row-major, `w * h * 4` bytes.

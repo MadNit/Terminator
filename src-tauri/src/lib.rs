@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tauri::{ipc::Channel, Manager, State};
 use terminator_core::{
     known_hosts::{KnownHostEntry, KnownHostsManager},
-    rdp::{RdpConfig, RdpEvent, RdpInput, RdpManager},
+    rdp::{RdpConfig, RdpEvent, RdpInput},
     secrets::{Backend, Secrets},
     session::Credentials,
     store::Store,
@@ -42,7 +42,6 @@ struct AppState {
     /// does NOT terminate the daemon, which is the entire point
     /// of having a daemon.
     daemon: Arc<DaemonClient>,
-    rdp: RdpManager,
     store: Store,
     /// Arc so blocking keychain work can be moved onto a blocking thread.
     secrets: Arc<Secrets>,
@@ -627,35 +626,43 @@ async fn open_rdp(
 
     tracing::info!("open_rdp: {user}@{host}:{port} {width}x{height}");
 
-    // Bounded, and deliberately shallow. The engine coalesces damage while
-    // this is full, so a slow renderer costs frame granularity rather than
-    // unbounded memory.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<RdpEvent>(8);
-    tokio::spawn(async move {
-        while let Some(ev) = rx.recv().await {
-            if channel.send(ev).is_err() {
-                break;
-            }
-        }
-    });
-
-    let (id, width, height) = state
-        .rdp
-        .open(
-            RdpConfig {
-                host,
-                port,
-                user,
-                password,
-                domain,
-                width,
-                height,
-            },
-            tx,
-        )
+    // Open on the daemon. The cleartext password crosses
+    // 127.0.0.1 only -- same loopback trust model the SSH
+    // `open_session` already uses.
+    let (id, width, height, mut sse) = state
+        .daemon
+        .rdp_open(&RdpConfig {
+            host,
+            port,
+            user,
+            password,
+            domain,
+            width,
+            height,
+        })
         .await
         .inspect_err(|err| tracing::error!("open_rdp failed: {err:#}"))
         .map_err(e)?;
+
+    // Drain the daemon's SSE stream of `RdpEvent`s into the
+    // Tauri `Channel` the webview is already listening on. Same
+    // pattern `open_session` uses for PTY/SSH `OutputEvent`s.
+    tokio::spawn(async move {
+        use futures::StreamExt;
+        while let Some(item) = sse.next().await {
+            match item {
+                Ok(ev) => {
+                    if channel.send(ev).is_err() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("rdp SSE stream error: {err:#}");
+                    break;
+                }
+            }
+        }
+    });
 
     tracing::info!("rdp session {id} open at {width}x{height}");
     Ok(RdpOpened {
@@ -682,7 +689,7 @@ async fn rdp_input(
     ops: Vec<RdpInput>,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    state.rdp.input(id, ops).map_err(e)
+    state.daemon.rdp_input(id, ops).await.map_err(e)
 }
 
 #[tauri::command]
@@ -693,13 +700,13 @@ async fn rdp_resize(
     height: u16,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    state.rdp.resize(id, width, height).map_err(e)
+    state.daemon.rdp_resize(id, width, height).await.map_err(e)
 }
 
 #[tauri::command]
 async fn close_rdp(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    state.rdp.close(id).map_err(e)
+    state.daemon.rdp_close(id).await.map_err(e)
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,7 +1273,6 @@ pub fn run() {
 
             let state = AppState {
                 daemon: Arc::new(daemon),
-                rdp: RdpManager::new(),
                 store,
                 secrets: Arc::new(Secrets::new(data_dir.join("secrets"))),
                 tunnels: TunnelManager::new(known_hosts.clone()),

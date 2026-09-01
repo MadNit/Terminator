@@ -50,7 +50,7 @@ impl DaemonClient {
         cols: u16,
         rows: u16,
         creds: &Credentials,
-    ) -> Result<(Uuid, SseStream)> {
+    ) -> Result<(Uuid, SseStream<OutputEvent>)> {
         let body = serde_json::json!({
             "spec": spec,
             "cols": cols,
@@ -93,7 +93,7 @@ impl DaemonClient {
             let status = sse_resp.status();
             return Err(anyhow!("GET /sessions/{id}/output returned {status}"));
         }
-        let stream = SseStream::new(sse_resp);
+        let stream = SseStream::<OutputEvent>::new(sse_resp);
         Ok((id, stream))
     }
 
@@ -174,7 +174,7 @@ impl DaemonClient {
     /// scrollback first and then yields live events, same as
     /// the open path -- the Tauri Channel the consumer drains
     /// this into looks identical to the one for a fresh open.
-    pub async fn attach(&self, id: Uuid) -> Result<SseStream> {
+    pub async fn attach(&self, id: Uuid) -> Result<SseStream<OutputEvent>> {
         let sse_url = format!("{}/sessions/{}/output", self.base_url, id);
         let sse_resp = self
             .http
@@ -186,7 +186,7 @@ impl DaemonClient {
             let status = sse_resp.status();
             return Err(anyhow!("GET /sessions/{id}/output returned {status}"));
         }
-        Ok(SseStream::new(sse_resp))
+        Ok(SseStream::<OutputEvent>::new(sse_resp))
     }
 
     // ---- File browser + exec through the daemon ----
@@ -469,6 +469,118 @@ impl DaemonClient {
         }
         resp.json().await.context("parse session_log_paths body")
     }
+
+    // -- RDP ---------------------------------------------------------
+    //
+    // The daemon owns every RDP session, so the Tauri side is
+    // a pure HTTP client here. Open returns the SSE stream of
+    // `RdpEvent`s alongside the id + initial size; the caller
+    // is expected to drain the stream into a Tauri Channel
+    // (mirroring what `open` does for PTY/SSH).
+    //
+    // The cleartext password travels over 127.0.0.1 only --
+    // same loopback trust model the SSH `open` already uses.
+
+    pub async fn rdp_open(
+        &self,
+        cfg: &terminator_core::rdp::RdpConfig,
+    ) -> Result<(Uuid, u16, u16, SseStream<terminator_core::rdp::RdpEvent>)> {
+        let url = format!("{}/rdp", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .json(cfg)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        let opened: RdpOpenResponse = resp.json().await
+            .context("parse rdp_open body")?;
+        let id = Uuid::parse_str(&opened.id)
+            .map_err(|e| anyhow!("daemon returned bad uuid {}: {e}", opened.id))?;
+
+        // Subscribe to the SSE stream AFTER the open call so
+        // the daemon has had a chance to register the channel
+        // (it does this in `open` before returning, so the race
+        // is closed). The Tauri side drains this into the
+        // existing `Channel<RdpEvent>` the webview listens to.
+        let sse_url = format!("{}/rdp/{}/output", self.base_url, id);
+        let sse_resp = self
+            .http
+            .get(&sse_url)
+            .send()
+            .await
+            .with_context(|| format!("GET {sse_url}"))?;
+        if !sse_resp.status().is_success() {
+            let status = sse_resp.status();
+            return Err(anyhow!("GET /rdp/{id}/output returned {status}"));
+        }
+        let stream = SseStream::<terminator_core::rdp::RdpEvent>::new(sse_resp);
+        Ok((id, opened.width, opened.height, stream))
+    }
+
+    pub async fn rdp_input(
+        &self,
+        id: Uuid,
+        ops: Vec<terminator_core::rdp::RdpInput>,
+    ) -> Result<()> {
+        let url = format!("{}/rdp/{}/input", self.base_url, id);
+        let resp = self
+            .http
+            .post(&url)
+            .json(&ops)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
+
+    pub async fn rdp_resize(
+        &self,
+        id: Uuid,
+        width: u16,
+        height: u16,
+    ) -> Result<()> {
+        let url = format!("{}/rdp/{}/resize", self.base_url, id);
+        let resp = self
+            .http
+            .post(&url)
+            .json(&serde_json::json!({ "width": width, "height": height }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
+
+    pub async fn rdp_close(&self, id: Uuid) -> Result<()> {
+        let url = format!("{}/rdp/{}", self.base_url, id);
+        let resp = self
+            .http
+            .delete(&url)
+            .send()
+            .await
+            .with_context(|| format!("DELETE {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
 }
 
 fn http_err(status: reqwest::StatusCode, body: String, url: &str) -> anyhow::Error {
@@ -490,29 +602,45 @@ struct FilesTransferResponse {
     bytes: u64,
 }
 
-/// `SseStream` is a thin wrapper around a reqwest `Bytes` stream
-/// that turns `data: ...\n\n` chunks into [`OutputEvent`]s. A small
-/// hand-rolled parser is plenty here; the daemon only emits
-/// `Output` and `Exit` and we never expect multi-line `data:`
-/// fields.
-pub struct SseStream {
+/// Wire shape for `POST /rdp`. Matches the daemon's
+/// `RdpOpened` struct.
+#[derive(Debug, Deserialize)]
+struct RdpOpenResponse {
+    id: String,
+    width: u16,
+    height: u16,
+}
+
+/// `SseStream<T>` is a thin wrapper around a reqwest `Bytes`
+/// stream that turns `data: ...\n\n` chunks into `T`s. Generic
+/// over the event type because the daemon emits two different
+/// shapes: `OutputEvent` for PTY/SSH byte streams and `RdpEvent`
+/// for the RDP desktop frame stream. A small hand-rolled parser
+/// is plenty here; the daemon only emits single-line `data:`
+/// fields and we never expect multi-line events.
+pub struct SseStream<T> {
     inner: std::pin::Pin<Box<dyn futures::stream::Stream<Item = reqwest::Result<Bytes>> + Send>>,
     buffer: Vec<u8>,
     done: bool,
+    _marker: std::marker::PhantomData<T>,
 }
 
-impl SseStream {
+impl<T> SseStream<T> {
     fn new(resp: reqwest::Response) -> Self {
         Self {
             inner: Box::pin(resp.bytes_stream()),
             buffer: Vec::with_capacity(4096),
             done: false,
+            _marker: std::marker::PhantomData,
         }
     }
 }
 
-impl futures::stream::Stream for SseStream {
-    type Item = Result<OutputEvent>;
+impl<T> futures::stream::Stream for SseStream<T>
+where
+    T: serde::de::DeserializeOwned + Send + Unpin + 'static,
+{
+    type Item = Result<T>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -520,7 +648,7 @@ impl futures::stream::Stream for SseStream {
     ) -> std::task::Poll<Option<Self::Item>> {
         loop {
             // Try to parse a complete event from the buffer first.
-            match take_event(&mut self.buffer) {
+            match take_event::<T>(&mut self.buffer) {
                 Some(Ok(event)) => return std::task::Poll::Ready(Some(Ok(event))),
                 Some(Err(e)) => return std::task::Poll::Ready(Some(Err(e))),
                 None => {}
@@ -551,7 +679,7 @@ impl futures::stream::Stream for SseStream {
 /// Pull one complete SSE event from `buf`. Returns `None` if the
 /// buffer doesn't yet end with a blank line. The `data:` field is
 /// the only one we care about; everything else is ignored.
-fn take_event(buf: &mut Vec<u8>) -> Option<Result<OutputEvent>> {
+fn take_event<T: serde::de::DeserializeOwned>(buf: &mut Vec<u8>) -> Option<Result<T>> {
     // SSE events are delimited by a blank line. Find the first
     // double-newline pair.
     let sep = find_double_newline(buf)?;
@@ -586,7 +714,7 @@ fn take_event(buf: &mut Vec<u8>) -> Option<Result<OutputEvent>> {
     if data.is_empty() {
         return None;
     }
-    Some(serde_json::from_str::<OutputEvent>(&data)
+    Some(serde_json::from_str::<T>(&data)
         .map_err(|e| anyhow!("malformed SSE event: {e}; data={data}")))
 }
 

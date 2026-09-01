@@ -24,11 +24,13 @@ use terminator_core::session::SessionManager;
 
 mod manager;
 mod persist;
+mod rdp;
 mod ringbuffer;
 mod server;
 
 use manager::DaemonSessionManager;
 use persist::SessionStore;
+use rdp::DaemonRdpManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -56,6 +58,11 @@ async fn main() -> Result<()> {
             .with_context(|| format!("open session store at {}", data_dir.display()))?,
     );
     let manager = Arc::new(DaemonSessionManager::new(core, Some(store)));
+    // The daemon now owns the live RDP sessions too, so a
+    // Tauri UI crash no longer takes the remote desktop with
+    // it. Mirrors the PTY/SSH lifecycle that the Session 1
+    // work moved out of the Tauri process.
+    let rdp_manager = Arc::new(DaemonRdpManager::new());
 
     // Bind to 127.0.0.1:0 so the OS picks a free port. Writing that
     // port to disk is what the Tauri side reads to find us on
@@ -74,7 +81,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("write port file {}", port_file.display()))?;
     tracing::info!(port = bound_port, data_dir = %data_dir.display(), "daemon ready");
 
-    let app = server::router(manager, log_dir);
+    let app = server::router(manager, rdp_manager, log_dir);
     axum::serve(listener, app)
         .with_graceful_shutdown(server::shutdown_signal())
         .await
