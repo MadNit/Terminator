@@ -6870,6 +6870,7 @@ dependencies = [
  "futures",
  "hyper",
  "parking_lot",
+ "rusqlite",
  "serde",
  "serde_json",
  "terminator-core",

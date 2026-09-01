@@ -49,3 +49,8 @@ async-stream = "0.3"
 # and never poisons -- important for a hot path (every PTY byte
 # takes the lock once on its way to the SSE client).
 parking_lot = "0.12"
+
+# Session metadata persistence. Same `bundled` feature as the
+# core's own SQLite, which avoids a system sqlite dependency
+# on the user's machine.
+rusqlite = { workspace = true }

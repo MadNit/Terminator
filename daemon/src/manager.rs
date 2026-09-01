@@ -11,6 +11,7 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
+use crate::persist::{PersistedSession, SessionStore};
 use crate::ringbuffer::OutputRingBuffer;
 use terminator_core::session::{Credentials, SessionManager};
 use terminator_core::transport::TransportSpec;
@@ -58,15 +59,22 @@ pub struct DaemonSessionManager {
     buffers: Mutex<std::collections::HashMap<Uuid, Arc<OutputRingBuffer>>>,
     /// Wall-clock time each session was opened, for `SessionInfo`.
     opened_at: Mutex<std::collections::HashMap<Uuid, i64>>,
+    /// SQLite-backed metadata store. Cross-restart memory:
+    /// even if the daemon dies, the reattach prompt knows
+    /// which sessions were recently alive. Optional so the
+    /// manager can be constructed without a path (e.g. in
+    /// tests); the production `main.rs` always passes one.
+    store: Option<Arc<SessionStore>>,
 }
 
 impl DaemonSessionManager {
-    pub fn new(core: Arc<SessionManager>) -> Self {
+    pub fn new(core: Arc<SessionManager>, store: Option<Arc<SessionStore>>) -> Self {
         Self {
             core,
             channels: Mutex::new(std::collections::HashMap::new()),
             buffers: Mutex::new(std::collections::HashMap::new()),
             opened_at: Mutex::new(std::collections::HashMap::new()),
+            store,
         }
     }
 
@@ -126,7 +134,17 @@ impl DaemonSessionManager {
 
         self.channels.lock().await.insert(id, tx);
         self.buffers.lock().await.insert(id, ringbuf);
-        self.opened_at.lock().await.insert(id, now_ms());
+        let opened_at = now_ms();
+        self.opened_at.lock().await.insert(id, opened_at);
+
+        // Persist AFTER the in-memory bookkeeping succeeds. A
+        // crash between core.open_with and here is acceptable:
+        // we'd just lose one session from the reattach prompt.
+        if let Some(store) = &self.store {
+            if let Err(e) = store.record_open(id, &spec, opened_at).await {
+                tracing::warn!("failed to persist session {id}: {e:#}");
+            }
+        }
 
         Ok((id, rx))
     }
@@ -151,23 +169,80 @@ impl DaemonSessionManager {
         let core = self.core.clone();
         tokio::task::spawn_blocking(move || core.close(id))
             .await
-            .map_err(|e| anyhow::anyhow!("close task panicked: {e}"))?
+            .map_err(|e| anyhow::anyhow!("close task panicked: {e}"))?;
+        // Mark closed in the persistent store. Idempotent and
+        // best-effort: the in-memory close has already happened
+        // by the time we get here, and a stale "still alive" row
+        // is just a cosmetic bug, not a correctness one.
+        if let Some(store) = &self.store {
+            if let Err(e) = store.record_close(id, now_ms()).await {
+                tracing::warn!("failed to mark session {id} closed: {e:#}");
+            }
+        }
+        Ok(())
     }
 
     pub async fn list(&self) -> Vec<SessionInfo> {
-        let core = self.core.clone();
-        // core.list_sessions returns ids; the rest of the metadata
-        // comes from our side tables. We pull on spawn_blocking because
-        // core keeps a Mutex on the session map.
-        let ids: Vec<Uuid> = tokio::task::spawn_blocking(move || core.list_sessions())
-            .await
-            .unwrap_or_default();
-        let mut out = Vec::with_capacity(ids.len());
-        let opened = self.opened_at.lock().await;
-        for id in ids {
+        // Merge two sources:
+        //   1. The persistent store (every session we've ever
+        //      opened, whether currently alive or not). This is
+        //      the source of truth across daemon restarts.
+        //   2. The core's live map (the in-memory list of
+        //      sessions that still have a live transport).
+        // The `alive` flag is `id ∈ core` for each persisted
+        // row. Sessions that exist only in core (e.g. opened
+        // before the store was wired up) fall through into the
+        // second pass below.
+        let mut out: Vec<SessionInfo> = Vec::new();
+        let mut live_ids: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
+
+        if let Some(store) = &self.store {
+            match store.list_all().await {
+                Ok(persisted) => {
+                    for p in persisted {
+                        let id = match Uuid::parse_str(&p.id) {
+                            Ok(u) => u,
+                            Err(_) => continue, // bad data, skip
+                        };
+                        let alive = self
+                            .core
+                            .spec(id)
+                            .is_some();
+                        if alive {
+                            live_ids.insert(id);
+                        }
+                        out.push(SessionInfo {
+                            id: p.id,
+                            spec: p.spec,
+                            alive,
+                            opened_at_ms: p.opened_at_ms,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to list persisted sessions: {e:#}");
+                }
+            }
+        }
+
+        // Always merge in anything currently alive in the core,
+        // even if the store didn't have it. This is the
+        // "opened in this run, before persistence happened"
+        // case; rare but possible if a `record_open` failed.
+        let core_ids: Vec<Uuid> = tokio::task::spawn_blocking({
+            let core = self.core.clone();
+            move || core.list_sessions()
+        })
+        .await
+        .unwrap_or_default();
+        for id in &core_ids {
+            if live_ids.contains(id) {
+                continue;
+            }
             let spec = self
                 .core
-                .spec(id)
+                .spec(*id)
                 .unwrap_or(TransportSpec::Local {
                     shell: None,
                     cwd: None,
@@ -175,10 +250,11 @@ impl DaemonSessionManager {
             out.push(SessionInfo {
                 id: id.to_string(),
                 spec,
-                alive: true, // core still has the id, so it's alive
-                opened_at_ms: *opened.get(&id).unwrap_or(&0),
+                alive: true,
+                opened_at_ms: *self.opened_at.lock().await.get(id).unwrap_or(&0),
             });
         }
+
         out.sort_by(|a, b| b.opened_at_ms.cmp(&a.opened_at_ms));
         out
     }

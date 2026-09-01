@@ -23,10 +23,12 @@ use tracing_subscriber::EnvFilter;
 use terminator_core::session::SessionManager;
 
 mod manager;
+mod persist;
 mod ringbuffer;
 mod server;
 
 use manager::DaemonSessionManager;
+use persist::SessionStore;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -45,7 +47,15 @@ async fn main() -> Result<()> {
         .with_context(|| format!("create log dir {}", log_dir.display()))?;
 
     let core = Arc::new(SessionManager::new(log_dir.clone()));
-    let manager = Arc::new(DaemonSessionManager::new(core));
+    // The session store keeps `{id, spec, opened_at_ms,
+    // closed_at_ms}` so the reattach prompt survives a daemon
+    // restart. It is required for the "previously open" list,
+    // which is now part of the GET /sessions response.
+    let store = Arc::new(
+        SessionStore::open(&data_dir.join("sessions.db"))
+            .with_context(|| format!("open session store at {}", data_dir.display()))?,
+    );
+    let manager = Arc::new(DaemonSessionManager::new(core, Some(store)));
 
     // Bind to 127.0.0.1:0 so the OS picks a free port. Writing that
     // port to disk is what the Tauri side reads to find us on

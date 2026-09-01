@@ -856,18 +856,51 @@ export default function App() {
               <div className="empty">
                 {liveSessionsChecked && liveSessions.length > 0 ? (
                   <div className="reattach-prompt">
-                    <h3>The daemon is still hosting {liveSessions.length} session{liveSessions.length === 1 ? "" : "s"}</h3>
-                    <p>Reattach to pick up where you left off. The daemon has kept the PTY alive and the last ~1 MB of scrollback is ready to replay.</p>
-                    <ul>
-                      {liveSessions.map((s) => (
-                        <li key={s.id}>
-                          <span className="reattach-target">{describeTarget(s.spec)}</span>
-                          <button onClick={() => reattachSession(s)}>Reattach</button>
-                        </li>
-                      ))}
-                    </ul>
-                    <div className="reattach-divider">or</div>
-                    <button onClick={addLocalTab}>Open a new shell</button>
+                    {(() => {
+                      const alive = liveSessions.filter((s) => s.alive);
+                      const dead = liveSessions.filter((s) => !s.alive);
+                      return (
+                        <>
+                          {alive.length > 0 && (
+                            <>
+                              <h3>
+                                {alive.length} live session{alive.length === 1 ? "" : "s"} still on the daemon
+                              </h3>
+                              <p>
+                                Reattach to pick up where you left off. The daemon has kept the PTY alive and the last ~1 MB of scrollback is ready to replay.
+                              </p>
+                              <ul>
+                                {alive.map((s) => (
+                                  <li key={s.id}>
+                                    <span className="reattach-target">{describeTarget(s.spec)}</span>
+                                    <button onClick={() => reattachSession(s)}>Reattach</button>
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                          {dead.length > 0 && (
+                            <>
+                              {alive.length > 0 && <div className="reattach-divider">also</div>}
+                              <h3>{dead.length} previously open session{dead.length === 1 ? "" : "s"}</h3>
+                              <p>The daemon restarted since these were last open. Credentials aren't remembered, so reattach isn't possible -- but you can re-open a fresh session with the same target.</p>
+                              <ul className="reattach-prev">
+                                {dead.map((s) => (
+                                  <li key={s.id}>
+                                    <span className="reattach-target">{describeTarget(s.spec)}</span>
+                                    <span className="reattach-when">
+                                      {new Date(s.openedAtMs).toLocaleString()}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                          <div className="reattach-divider">or</div>
+                          <button onClick={addLocalTab}>Open a new shell</button>
+                        </>
+                      );
+                    })()}
                   </div>
                 ) : (
                   <>
