@@ -80,6 +80,41 @@ export async function openSession(
 
 export const listProfiles = () => invoke<Profile[]>("list_profiles");
 
+/** Metadata for a session the daemon is still hosting. Matches
+ *  the daemon's `SessionInfo` shape exactly; we re-declare it
+ *  here rather than importing from a shared type so the frontend
+ *  doesn't need to know which crate it came from. */
+export type DaemonSession = {
+  id: string;
+  spec: TransportSpec;
+  alive: boolean;
+  openedAtMs: number;
+};
+
+/** List the live sessions the daemon is still holding. Used at
+ *  app start to decide whether to show the "Reattach?" prompt. */
+export const listSessions = () => invoke<DaemonSession[]>("list_sessions");
+
+/** Reattach to a session the daemon is already hosting. Returns
+ *  a session id (UUID string); output and exit events flow
+ *  through `onEvent` exactly like `openSession`. The daemon
+ *  replays the last ~1 MB of scrollback before live events. */
+export const attachSession = (
+  id: string,
+  cols: number,
+  rows: number,
+  onEvent: (e: SessionEvent) => void,
+): Promise<string> => {
+  const channel = new Channel<SessionEvent>();
+  channel.onmessage = onEvent;
+  return invoke<string>("attach_session", {
+    id,
+    cols,
+    rows,
+    channel,
+  });
+};
+
 export type ShellOption = { name: string; path: string };
 
 /** Shells auto-detected on this machine. PowerShell-first on Windows,

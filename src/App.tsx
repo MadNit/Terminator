@@ -24,6 +24,7 @@ import { connectBlockedReason, describeTarget } from "./lib/transport";
 import {
   deleteProfile,
   deleteSecret,
+  listSessions,
   renameSecret,
   updateProfile,
   listProfiles,
@@ -34,6 +35,7 @@ import {
   type VaultStatus,
   hasSecret,
   setSecret,
+  type DaemonSession,
   type Profile,
   type TransportSpec,
   writeSession,
@@ -58,6 +60,13 @@ interface Tab {
   exited: boolean;
   /** Bumped to remount the pane, which is what a reconnect is. */
   gen: number;
+  /** Reattach path: this tab was added because the user asked to
+   *  reattach to a session the daemon is still hosting, rather
+   *  than opening a fresh one. The `reattachId` is the daemon
+   *  session id; the pane uses it to call `attachSession` instead
+   *  of `openSession` on mount. */
+  reattaching?: boolean;
+  reattachId?: string;
 }
 
 const localSpec = (): TransportSpec => ({
@@ -101,6 +110,15 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState<Profile | null>(null);
   /** Profile being edited in the connection dialog. */
   const [editing, setEditing] = useState<Profile | null>(null);
+  /** Sessions the daemon is still hosting. We poll once on app
+   *  start: if the user closed the app while a tab was open,
+   *  the daemon kept the PTY alive and these are the tabs we
+   *  can reattach to. Empty when the daemon reports nothing. */
+  const [liveSessions, setLiveSessions] = useState<DaemonSession[]>([]);
+  /** True after we've checked the daemon once. Until then we
+   *  don't render the reattach prompt so the empty state
+   *  doesn't flash. */
+  const [liveSessionsChecked, setLiveSessionsChecked] = useState(false);
   // Quick-connect filter, owned here so the header and sidebar stay in sync.
   const [query, setQuery] = useState("");
   // Sidebar visibility, persisted: a user who works full-width wants it to
@@ -186,6 +204,48 @@ export default function App() {
       setStatus(String(err));
     }
   }, []);
+
+  /** Ask the daemon what it's still hosting, once on app start.
+   *  Errors are swallowed: a stale daemon that just exited is
+   *  not a "reattach to nothing" error, it's just "no
+   *  reattach prompt" and we move on. */
+  useEffect(() => {
+    void (async () => {
+      try {
+        const list = await listSessions();
+        setLiveSessions(list);
+      } catch {
+        setLiveSessions([]);
+      } finally {
+        setLiveSessionsChecked(true);
+      }
+    })();
+  }, []);
+
+  /** Reattach a tab to a session the daemon is still hosting. */
+  const reattachSession = (s: DaemonSession) => {
+    const key = nextKey++;
+    setTabs((t) => [
+      ...t,
+      {
+        key,
+        title: describeTarget(s.spec) || "session",
+        spec: s.spec,
+        sessionId: null, // populated by the onReady callback
+        exited: false,
+        gen: 0,
+        // Reattach: the spec carries the credential method
+        // but we don't re-prompt for it -- the daemon is
+        // already authenticated. The Tauri command is
+        // attach_session (not open_session), so it doesn't
+        // need a secretRef / password.
+        reattaching: true,
+        reattachId: s.id,
+      },
+    ]);
+    setActive(key);
+    setSelectedId(null);
+  };
 
   useEffect(() => {
     void (async () => {
@@ -655,6 +715,7 @@ export default function App() {
                         password={t.password}
                         jumpSecretRef={t.jumpSecretRef}
                         jumpPassword={t.jumpPassword}
+                        reattachId={t.reattachId}
                         active={t.key === active}
                         onInputData={(data) => handleBroadcastInput(t.key, data)}
                         onReady={(id) =>
@@ -752,6 +813,7 @@ export default function App() {
                                 password={t.password}
                                 jumpSecretRef={t.jumpSecretRef}
                                 jumpPassword={t.jumpPassword}
+                                reattachId={t.reattachId}
                                 active={(focusedPaneKey ?? active) === t.key}
                                 onInputData={(data) => handleBroadcastInput(t.key, data)}
                                 onReady={(id) =>
@@ -792,8 +854,27 @@ export default function App() {
             )}
             {tabs.length === 0 && (
               <div className="empty">
-                No sessions.{" "}
-                <button onClick={addLocalTab}>Open a shell</button>
+                {liveSessionsChecked && liveSessions.length > 0 ? (
+                  <div className="reattach-prompt">
+                    <h3>The daemon is still hosting {liveSessions.length} session{liveSessions.length === 1 ? "" : "s"}</h3>
+                    <p>Reattach to pick up where you left off. The daemon has kept the PTY alive and the last ~1 MB of scrollback is ready to replay.</p>
+                    <ul>
+                      {liveSessions.map((s) => (
+                        <li key={s.id}>
+                          <span className="reattach-target">{describeTarget(s.spec)}</span>
+                          <button onClick={() => reattachSession(s)}>Reattach</button>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="reattach-divider">or</div>
+                    <button onClick={addLocalTab}>Open a new shell</button>
+                  </div>
+                ) : (
+                  <>
+                    No sessions.{" "}
+                    <button onClick={addLocalTab}>Open a shell</button>
+                  </>
+                )}
               </div>
             )}
           </div>

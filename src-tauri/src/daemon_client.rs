@@ -166,6 +166,29 @@ impl DaemonClient {
         }
         Ok(resp.json().await?)
     }
+
+    /// Subscribe to a session that already exists on the daemon.
+    /// This is the reattach path: the user has the daemon from
+    /// a previous Tauri run still alive in the background, and
+    /// wants to keep watching a session that was opened in
+    /// that previous run. The returned stream replays the
+    /// scrollback first and then yields live events, same as
+    /// the open path -- the Tauri Channel the consumer drains
+    /// this into looks identical to the one for a fresh open.
+    pub async fn attach(&self, id: Uuid) -> Result<SseStream> {
+        let sse_url = format!("{}/sessions/{}/output", self.base_url, id);
+        let sse_resp = self
+            .http
+            .get(&sse_url)
+            .send()
+            .await
+            .with_context(|| format!("GET {sse_url}"))?;
+        if !sse_resp.status().is_success() {
+            let status = sse_resp.status();
+            return Err(anyhow!("GET /sessions/{id}/output returned {status}"));
+        }
+        Ok(SseStream::new(sse_resp))
+    }
 }
 
 #[derive(Debug, Deserialize)]

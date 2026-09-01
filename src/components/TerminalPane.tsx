@@ -15,6 +15,7 @@ import {
 } from "../lib/themes";
 import type { ILink } from "@xterm/xterm";
 import {
+  attachSession,
   closeSession,
   decodeB64,
   logFrontend,
@@ -37,6 +38,15 @@ interface Props {
   /** Jump host credential refs */
   jumpSecretRef?: string;
   jumpPassword?: string;
+  /**
+   * Reattach to a session the daemon is already hosting. When
+   * set, the pane calls `attachSession(reattachId, ...)` instead
+   * of `openSession(...)`, so the daemon replays scrollback
+   * before any new output. The `secretRef` / `password` fields
+   * are ignored in this path -- the daemon already
+   * authenticated the original open.
+   */
+  reattachId?: string;
   active: boolean;
   /** Function called when data is typed in this pane; useful for broadcast input */
   onInputData?: (data: string) => void;
@@ -61,6 +71,7 @@ export function TerminalPane({
   password,
   jumpSecretRef,
   jumpPassword,
+  reattachId,
   active,
   onInputData,
   onReady,
@@ -420,71 +431,80 @@ export function TerminalPane({
       );
     }
 
-    openSession(
-      spec,
-      term.cols,
-      term.rows,
-      (ev) => {
-        if (disposed) return;
-        if (ev.type === "output") {
-          if (!sawOutput) {
-            sawOutput = true;
-            setReconnectAttempts(0); // Reset attempts on successful traffic
-            cancelAutoReconnect();
-            logFrontend("info", `pane first output (${spec.kind})`);
-          }
-          const bytes = decodeB64(ev.data);
-          term.write(bytes);
+    // Pick the right entry point: open a fresh session on the
+    // daemon, or attach to one the daemon is already hosting.
+    // The two flows share the same Tauri Channel shape, so the
+    // onEvent callback is identical -- just the entrypoint
+    // differs.
+    const onEvent = (ev: { type: "output"; data: string } | { type: "exit" }) => {
+      if (disposed) return;
+      if (ev.type === "output") {
+        if (!sawOutput) {
+          sawOutput = true;
+          setReconnectAttempts(0); // Reset attempts on successful traffic
+          cancelAutoReconnect();
+          logFrontend("info", `pane first output (${spec.kind})`);
+        }
+        const bytes = decodeB64(ev.data);
+        term.write(bytes);
 
-          // Check terminal output against active triggers
-          try {
-            const rawStr = new TextDecoder().decode(bytes);
-            const plain = rawStr.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
-            const activeTriggers = loadTriggers();
-            const now = Date.now();
-            for (const trig of activeTriggers) {
-              if (!trig.enabled) continue;
-              const lastFired = lastTriggerFiredRef.current.get(trig.id) ?? 0;
-              if (now - lastFired < 3000) continue;
+        // Check terminal output against active triggers
+        try {
+          const rawStr = new TextDecoder().decode(bytes);
+          const plain = rawStr.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+          const activeTriggers = loadTriggers();
+          const now = Date.now();
+          for (const trig of activeTriggers) {
+            if (!trig.enabled) continue;
+            const lastFired = lastTriggerFiredRef.current.get(trig.id) ?? 0;
+            if (now - lastFired < 3000) continue;
 
-              let matched = false;
-              if (trig.isRegex) {
-                try {
-                  const re = new RegExp(trig.pattern, "i");
-                  matched = re.test(plain);
-                } catch {
-                  // Ignore regex syntax errors
-                }
-              } else {
-                matched = plain.toLowerCase().includes(trig.pattern.toLowerCase());
+            let matched = false;
+            if (trig.isRegex) {
+              try {
+                const re = new RegExp(trig.pattern, "i");
+                matched = re.test(plain);
+              } catch {
+                // Ignore regex syntax errors
               }
+            } else {
+              matched = plain.toLowerCase().includes(trig.pattern.toLowerCase());
+            }
 
-              if (matched) {
-                lastTriggerFiredRef.current.set(trig.id, now);
-                if (trig.action === "sound" || trig.action === "both") {
-                  playChime(trig.id.includes("error") || trig.pattern.toLowerCase().includes("error"));
-                }
-                if (trig.action === "notify" || trig.action === "both") {
-                  const snippet = plain.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100);
-                  sendDesktopNotification(
-                    `[Terminator] ${trig.name}`,
-                    snippet || `Matched output pattern: ${trig.pattern}`,
-                  );
-                }
+            if (matched) {
+              lastTriggerFiredRef.current.set(trig.id, now);
+              if (trig.action === "sound" || trig.action === "both") {
+                playChime(trig.id.includes("error") || trig.pattern.toLowerCase().includes("error"));
+              }
+              if (trig.action === "notify" || trig.action === "both") {
+                const snippet = plain.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100);
+                sendDesktopNotification(
+                  `[Terminator] ${trig.name}`,
+                  snippet || `Matched output pattern: ${trig.pattern}`,
+                );
               }
             }
-          } catch {
-            // Non-blocking trigger check
           }
-        } else if (ev.type === "exit") {
-          finish("[session ended]");
+        } catch {
+          // Non-blocking trigger check
         }
-      },
-      secretRef,
-      password,
-      jumpSecretRef,
-      jumpPassword,
-    )
+      } else if (ev.type === "exit") {
+        finish("[session ended]");
+      }
+    };
+    const openOrAttach: Promise<string> = reattachId
+      ? attachSession(reattachId, term.cols, term.rows, onEvent)
+      : openSession(
+          spec,
+          term.cols,
+          term.rows,
+          onEvent,
+          secretRef,
+          password,
+          jumpSecretRef,
+          jumpPassword,
+        );
+    openOrAttach
       .then((id) => {
         idRef.current = id;
         if (disposed) {

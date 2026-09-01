@@ -204,6 +204,75 @@ async fn log_frontend(level: String, message: String) {
     }
 }
 
+/// Live sessions the daemon is still hosting, plus their
+/// spec. Returned as a free-form JSON value because the
+/// `TransportSpec` shape on the wire is what the frontend
+/// already understands for `openSession`; reusing the type
+/// here would force a stricter schema than the rest of the
+/// app uses for the same concept.
+#[tauri::command]
+async fn list_sessions(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    state
+        .daemon
+        .list_sessions()
+        .await
+        .map_err(e)
+}
+
+/// Reattach to a session the daemon is already hosting. The
+/// daemon replays the last ~1 MB of scrollback, then yields
+/// live events through the same Tauri Channel shape `open_session`
+/// uses, so the frontend can re-use its existing `OpenSession`
+/// flow against the returned id.
+#[tauri::command]
+async fn attach_session(
+    state: State<'_, AppState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+    channel: Channel<SessionEvent>,
+) -> Result<String, String> {
+    let id = Uuid::parse_str(&id).map_err(e)?;
+    tracing::info!("attach_session: {id} {cols}x{rows}");
+
+    // Send the current terminal size so the reattached view
+    // doesn't end up with the wrong dimensions the daemon has
+    // been using while we were gone. If the session's process
+    // has exited, the resize is a no-op and we proceed.
+    state.daemon.resize(id, cols, rows).await.map_err(e)?;
+
+    let mut sse = state
+        .daemon
+        .attach(id)
+        .await
+        .inspect_err(|err| tracing::error!("daemon attach_session failed: {err:#}"))
+        .map_err(e)?;
+
+    let out_ch = channel.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt;
+        while let Some(item) = sse.next().await {
+            match item {
+                Ok(DaemonOutputEvent::Output { data }) => {
+                    if out_ch.send(SessionEvent::Output { data }).is_err() {
+                        break; // frontend dropped its subscription
+                    }
+                }
+                Ok(DaemonOutputEvent::Exit) => {
+                    let _ = out_ch.send(SessionEvent::Exit);
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!("SSE stream error: {e}");
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(id.to_string())
+}
+
 #[tauri::command]
 async fn write_session(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
@@ -1353,6 +1422,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_session,
+            attach_session,
+            list_sessions,
             write_session,
             resize_session,
             close_session,
