@@ -11,7 +11,7 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
-use crate::persist::{PersistedSession, SessionStore};
+use crate::persist::SessionStore;
 use crate::ringbuffer::OutputRingBuffer;
 use terminator_core::session::{Credentials, SessionManager};
 use terminator_core::transport::TransportSpec;
@@ -167,7 +167,13 @@ impl DaemonSessionManager {
 
     pub async fn close(&self, id: Uuid) -> Result<()> {
         let core = self.core.clone();
-        tokio::task::spawn_blocking(move || core.close(id))
+        // `core.close` always returns Ok -- any failure mode is
+        // "the transport shutdown task panicked", which is a
+        // join error rather than the inner Result. We still want
+        // to fall through to the persistent-store close below
+        // even if the join fails, so discard the inner Ok
+        // explicitly.
+        let _ = tokio::task::spawn_blocking(move || core.close(id))
             .await
             .map_err(|e| anyhow::anyhow!("close task panicked: {e}"))?;
         // Mark closed in the persistent store. Idempotent and
@@ -265,6 +271,31 @@ impl DaemonSessionManager {
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("unknown session {id}"))?;
         Ok(tx.subscribe())
+    }
+
+    /// Look up the `RemoteFs` for a live session. The file browser
+    /// and exec command on the Tauri side go through here, so
+    /// every file operation is performed by the same process
+    /// that owns the SSH connection -- no cross-process tricks
+    /// for SFTP, no second hop through the Tauri process.
+    pub async fn files(&self, id: Uuid) -> Result<Arc<dyn terminator_core::files::RemoteFs>> {
+        self.core.files(id).await
+    }
+
+    /// One-shot command execution. Same path the Tauri side
+    /// used before the daemon existed; we keep it here so
+    /// RemoteEditorModal, ResourceMonitorModal, and the
+    /// batch-runner continue to work for SSH sessions.
+    pub async fn exec_command(
+        &self,
+        spec: &TransportSpec,
+        command: &str,
+        creds: terminator_core::session::Credentials,
+        cwd: Option<&str>,
+    ) -> Result<terminator_core::session::ExecResult> {
+        self.core
+            .exec_command(spec, command, creds, cwd)
+            .await
     }
 
     /// Snapshot of the buffered output for reattach. Returns an

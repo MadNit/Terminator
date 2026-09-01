@@ -79,15 +79,12 @@ struct AppState {
     /// proxy. Closing the Tauri app does NOT terminate the daemon,
     /// which is the entire point of having a daemon.
     daemon: Arc<DaemonClient>,
-    /// Stale-but-kept SessionManager used for the few helper methods
-    /// the daemon doesn't yet expose over HTTP: `log_dir`,
-    /// `list_session_logs`, `session_logs`, `remote_*` (file
-    /// browser), and one-shot `exec_*`. None of these open or
-    /// manage PTYs -- they just read from the same on-disk log
-    /// directory the daemon writes to. For Session 1 this means
-    /// remote_* / exec_* return "session not found" at runtime,
-    /// which is fine because SSH through the daemon is deferred
-    /// to Session 1d.
+    /// Kept for the few helper methods the daemon doesn't expose
+    /// over HTTP yet: `log_dir`, `list_session_logs`, `session_logs`.
+    /// All session lifecycle (open/write/resize/close), the file
+    /// browser, and one-shot command execution go through `daemon`.
+    /// These log helpers read from the same on-disk directory the
+    /// daemon writes to, so the two sides agree on paths.
     helpers: Arc<SessionManager>,
     rdp: RdpManager,
     store: Store,
@@ -820,8 +817,15 @@ async fn close_rdp(state: State<'_, AppState>, id: String) -> Result<(), String>
 // ---------------------------------------------------------------------------
 
 /// Progress for one transfer, streamed to the webview.
+///
+/// The webview side (TypeScript) expects all three variants because
+/// the upload/download commands used to emit them; now that those
+/// commands are stubbed while the daemon grows matching routes,
+/// only `Failed` is sent. The other two are kept on the wire so the
+/// frontend does not need a matching change when the routes land.
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+#[allow(dead_code)]
 enum TransferEvent {
     #[serde(rename_all = "camelCase")]
     Progress { transferred: u64, total: u64 },
@@ -934,8 +938,7 @@ async fn list_local_dir(path: String) -> Result<terminator_core::files::Listing,
 #[tauri::command]
 async fn remote_home(state: State<'_, AppState>, id: String) -> Result<String, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.home().await.map_err(e)
+    state.daemon.files_home(id).await.map_err(e)
 }
 
 #[tauri::command]
@@ -945,15 +948,13 @@ async fn list_remote_dir(
     path: String,
 ) -> Result<terminator_core::files::Listing, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.list(&path).await.map_err(e)
+    state.daemon.files_list(id, &path).await.map_err(e)
 }
 
 #[tauri::command]
 async fn remote_mkdir(state: State<'_, AppState>, id: String, path: String) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.mkdir(&path).await.map_err(e)
+    state.daemon.files_mkdir(id, &path).await.map_err(e)
 }
 
 #[tauri::command]
@@ -964,8 +965,7 @@ async fn remote_remove(
     is_dir: bool,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.remove(&path, is_dir).await.map_err(e)
+    state.daemon.files_remove(id, &path, is_dir).await.map_err(e)
 }
 
 #[tauri::command]
@@ -976,18 +976,7 @@ async fn remote_rename(
     to: String,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.rename(&from, &to).await.map_err(e)
-}
-
-/// Turn a transfer channel into a progress sink for the core.
-fn progress_sink(channel: Channel<TransferEvent>) -> terminator_core::files::ProgressSink {
-    Arc::new(move |p: terminator_core::files::Progress| {
-        let _ = channel.send(TransferEvent::Progress {
-            transferred: p.transferred,
-            total: p.total,
-        });
-    })
+    state.daemon.files_rename(id, &from, &to).await.map_err(e)
 }
 
 /// Local -> remote.
@@ -996,36 +985,23 @@ fn progress_sink(channel: Channel<TransferEvent>) -> terminator_core::files::Pro
 /// only listening to the channel still learns the transfer failed.
 #[tauri::command]
 async fn upload_file(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     id: String,
-    local: String,
-    remote: String,
+    _local: String,
+    _remote: String,
     channel: Channel<TransferEvent>,
 ) -> Result<u64, String> {
-    let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    let result = fs
-        .upload(
-            std::path::Path::new(&local),
-            &remote,
-            progress_sink(channel.clone()),
-        )
-        .await;
-
-    match result {
-        Ok(bytes) => {
-            let _ = channel.send(TransferEvent::Done { bytes });
-            Ok(bytes)
-        }
-        Err(err) => {
-            let message = format!("{err:#}");
-            tracing::error!("upload failed: {message}");
-            let _ = channel.send(TransferEvent::Failed {
-                message: message.clone(),
-            });
-            Err(message)
-        }
-    }
+    // The daemon does not yet expose an upload endpoint. The pre-daemon
+    // path used `state.helpers.files(id)`, which was always empty once
+    // sessions moved to the daemon, so the old behaviour was already
+    // broken for SSH sessions; we surface a clear error here rather
+    // than silently failing with "session not found".
+    let _ = Uuid::parse_str(&id).map_err(e)?;
+    let message = "remote upload is not yet supported via the daemon".to_string();
+    let _ = channel.send(TransferEvent::Failed {
+        message: message.clone(),
+    });
+    Err(message)
 }
 
 #[tauri::command]
@@ -1035,8 +1011,7 @@ async fn read_remote_text_file(
     path: String,
 ) -> Result<String, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.read_text(&path, 10 * 1024 * 1024).await.map_err(e)
+    state.daemon.files_read(id, &path, 10 * 1024 * 1024).await.map_err(e)
 }
 
 #[tauri::command]
@@ -1047,8 +1022,7 @@ async fn write_remote_text_file(
     content: String,
 ) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.write_text(&path, &content).await.map_err(e)
+    state.daemon.files_write(id, &path, &content).await.map_err(e)
 }
 
 #[tauri::command]
@@ -1073,14 +1047,15 @@ async fn write_local_text_file(path: String, content: String) -> Result<(), Stri
 
 #[tauri::command]
 async fn search_remote_dir(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     id: String,
-    path: String,
-    options: terminator_core::files::SearchOptions,
+    _path: String,
+    _options: terminator_core::files::SearchOptions,
 ) -> Result<Vec<terminator_core::files::FileSearchResult>, String> {
-    let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    fs.search(&path, &options).await.map_err(e)
+    // No daemon route yet for remote file search. See upload_file
+    // above for the same rationale.
+    let _ = Uuid::parse_str(&id).map_err(e)?;
+    Err("remote search is not yet supported via the daemon".into())
 }
 
 #[tauri::command]
@@ -1099,36 +1074,20 @@ async fn search_local_dir(
 /// Remote -> local.
 #[tauri::command]
 async fn download_file(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     id: String,
-    remote: String,
-    local: String,
+    _remote: String,
+    _local: String,
     channel: Channel<TransferEvent>,
 ) -> Result<u64, String> {
-    let id = Uuid::parse_str(&id).map_err(e)?;
-    let fs = state.helpers.files(id).await.map_err(e)?;
-    let result = fs
-        .download(
-            &remote,
-            std::path::Path::new(&local),
-            progress_sink(channel.clone()),
-        )
-        .await;
-
-    match result {
-        Ok(bytes) => {
-            let _ = channel.send(TransferEvent::Done { bytes });
-            Ok(bytes)
-        }
-        Err(err) => {
-            let message = format!("{err:#}");
-            tracing::error!("download failed: {message}");
-            let _ = channel.send(TransferEvent::Failed {
-                message: message.clone(),
-            });
-            Err(message)
-        }
-    }
+    // No daemon route yet for remote download. See upload_file
+    // above for the same rationale.
+    let _ = Uuid::parse_str(&id).map_err(e)?;
+    let message = "remote download is not yet supported via the daemon".to_string();
+    let _ = channel.send(TransferEvent::Failed {
+        message: message.clone(),
+    });
+    Err(message)
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,8 +1146,8 @@ async fn exec_command(
     }
 
     state
-        .helpers
-        .exec_command(&spec, &command, creds, cwd.as_deref())
+        .daemon
+        .exec_command(&spec, &command, &creds, cwd.as_deref())
         .await
         .map_err(e)
 }
@@ -1201,7 +1160,7 @@ async fn batch_exec(
     let mut handles = Vec::new();
 
     for req in requests {
-        let state_sessions = state.helpers.clone();
+        let state_daemon = state.daemon.clone();
         let secrets = state.secrets.clone();
 
         handles.push(tokio::spawn(async move {
@@ -1226,7 +1185,7 @@ async fn batch_exec(
 
             match tokio::time::timeout(
                 std::time::Duration::from_secs(60),
-                state_sessions.exec_command(&req.spec, &req.command, creds, req.cwd.as_deref()),
+                state_daemon.exec_command(&req.spec, &req.command, &creds, req.cwd.as_deref()),
             )
             .await
             {

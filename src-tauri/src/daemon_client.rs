@@ -11,14 +11,13 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
-use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use terminator_core::files::Listing;
 use terminator_core::session::Credentials;
 use terminator_core::transport::TransportSpec;
 
@@ -189,7 +188,146 @@ impl DaemonClient {
         }
         Ok(SseStream::new(sse_resp))
     }
+
+    // ---- File browser + exec through the daemon ----
+    //
+    // Each of these was a `state.helpers.files(id).await` call
+    // before commit 258e4cf moved sessions to the daemon. Now
+    // they hit the matching daemon route, which runs the
+    // RemoteFs method in the process that owns the SSH
+    // connection.
+
+    pub async fn files_home(&self, id: Uuid) -> Result<String> {
+        let url = format!("{}/sessions/{}/files/home", self.base_url, id);
+        let resp = self.http.get(&url).send().await
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(resp.text().await.context("read files/home body")?)
+    }
+
+    pub async fn files_list(&self, id: Uuid, path: &str) -> Result<Listing> {
+        let url = format!("{}/sessions/{}/files/list", self.base_url, id);
+        let resp = self.http.get(&url).query(&[("path", path)]).send().await
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.json().await.context("parse files/list body")
+    }
+
+    pub async fn files_mkdir(&self, id: Uuid, path: &str) -> Result<()> {
+        self.files_write_like("mkdir", id, path).await
+    }
+
+    pub async fn files_remove(&self, id: Uuid, path: &str, is_dir: bool) -> Result<()> {
+        let url = format!("{}/sessions/{}/files/remove", self.base_url, id);
+        let resp = self.http.post(&url)
+            .json(&serde_json::json!({ "path": path, "is_dir": is_dir }))
+            .send().await.with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
+
+    pub async fn files_rename(&self, id: Uuid, from: &str, to: &str) -> Result<()> {
+        let url = format!("{}/sessions/{}/files/rename", self.base_url, id);
+        let resp = self.http.post(&url)
+            .json(&serde_json::json!({ "from": from, "to": to }))
+            .send().await.with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
+
+    pub async fn files_read(&self, id: Uuid, path: &str, max_bytes: usize) -> Result<String> {
+        let url = format!("{}/sessions/{}/files/read", self.base_url, id);
+        let max_str = max_bytes.to_string();
+        let resp = self.http.get(&url)
+            .query(&[("path", path), ("max", max_str.as_str())])
+            .send().await.with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.text().await.context("read files/read body")
+    }
+
+    pub async fn files_write(&self, id: Uuid, path: &str, content: &str) -> Result<()> {
+        let url = format!("{}/sessions/{}/files/write", self.base_url, id);
+        let resp = self.http.post(&url)
+            .json(&serde_json::json!({ "path": path, "content": content }))
+            .send().await.with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
+
+    pub async fn exec_command(
+        &self,
+        spec: &TransportSpec,
+        command: &str,
+        creds: &terminator_core::session::Credentials,
+        cwd: Option<&str>,
+    ) -> Result<terminator_core::session::ExecResult> {
+        // The daemon's POST /sessions/{id}/exec route uses the
+        // spec from the request body, not from the URL, so we
+        // can pass any UUID in the path. Nil is the obvious
+        // "this slot is meaningless" choice; the daemon
+        // handler does not read it.
+        let url = format!("{}/sessions/{}/exec", self.base_url, Uuid::nil());
+        let body = serde_json::json!({
+            "spec": spec,
+            "command": command,
+            "password": creds.secret,
+            "key_passphrase": creds.key_passphrase,
+            "jump_password": creds.jump_secret,
+            "jump_key_passphrase": creds.jump_key_passphrase,
+            "cwd": cwd,
+        });
+        let resp = self.http.post(&url).json(&body).send().await
+            .with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.json().await.context("parse exec body")
+    }
+
+    async fn files_write_like(&self, op: &str, id: Uuid, path: &str) -> Result<()> {
+        let url = format!("{}/sessions/{}/files/{}", self.base_url, id, op);
+        let resp = self.http.post(&url)
+            .json(&serde_json::json!({ "path": path }))
+            .send().await.with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
 }
+
+fn http_err(status: reqwest::StatusCode, body: String, url: &str) -> anyhow::Error {
+    anyhow!("{url} returned {status}: {body}")
+}
+
 
 #[derive(Debug, Deserialize)]
 struct OpenResponse {

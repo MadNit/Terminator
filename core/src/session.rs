@@ -26,7 +26,7 @@ pub type ExitSink = Arc<dyn Fn() + Send + Sync>;
 
 /// Credentials resolved at connect time. Never persisted with a profile --
 /// the profile only records *which* method to use.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Credentials {
     pub secret: Option<String>,
     pub key_passphrase: Option<String>,

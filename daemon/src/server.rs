@@ -16,7 +16,6 @@
 //! indicator the port-bind is being shadowed by something malicious).
 
 use std::convert::Infallible;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -105,20 +104,19 @@ pub fn router(manager: Arc<DaemonSessionManager>) -> Router {
         .route("/sessions/:id/scrollback", get(session_scrollback))
         .route("/sessions/:id/input", post(write_session))
         .route("/sessions/:id/resize", post(resize_session))
+        // File browser + one-shot exec. These complete the
+        // migration that started in commit 258e4cf: every
+        // session-related operation now goes through the
+        // daemon, so the Tauri side is a pure proxy.
+        .route("/sessions/:id/files/home", get(files_home))
+        .route("/sessions/:id/files/list", get(files_list))
+        .route("/sessions/:id/files/mkdir", post(files_mkdir))
+        .route("/sessions/:id/files/remove", post(files_remove))
+        .route("/sessions/:id/files/rename", post(files_rename))
+        .route("/sessions/:id/files/read", get(files_read))
+        .route("/sessions/:id/files/write", post(files_write))
+        .route("/sessions/:id/exec", post(exec_command))
         .with_state(state)
-}
-
-pub async fn bind_and_serve(
-    manager: Arc<DaemonSessionManager>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let app = router(manager);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("daemon listening on {}", listener.local_addr()?);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    Ok(())
 }
 
 pub async fn shutdown_signal() {
@@ -322,6 +320,197 @@ fn broadcast_to_sse(
                 }
             }
         }
+    }
+}
+
+// ============================================================
+// File browser + exec endpoints. These exist so the Tauri
+// side doesn't need a second hop through a stale helper
+// SessionManager: every file operation runs in the daemon
+// process that owns the SSH connection, which means SFTP
+// reads/writes share a single multiplexed channel with the
+// live terminal session, and a one-shot `exec_command` for
+// RemoteEditorModal doesn't have to reconnect to the host.
+// ============================================================
+
+async fn files_home(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<String, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| {
+        warn!(%id, "files_home: {e}");
+        file_status_for(&e)
+    })?;
+    fs.home().await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+#[derive(serde::Deserialize)]
+struct FilesListQuery {
+    path: String,
+}
+
+async fn files_list(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<FilesListQuery>,
+) -> Result<Json<terminator_core::files::Listing>, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    fs.list(&q.path)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+#[derive(serde::Deserialize)]
+struct FilesMkdirBody {
+    path: String,
+}
+
+async fn files_mkdir(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<FilesMkdirBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    fs.mkdir(&body.path)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct FilesRemoveBody {
+    path: String,
+    is_dir: bool,
+}
+
+async fn files_remove(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<FilesRemoveBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    fs.remove(&body.path, body.is_dir)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct FilesRenameBody {
+    from: String,
+    to: String,
+}
+
+async fn files_rename(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<FilesRenameBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    fs.rename(&body.from, &body.to)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct FilesReadQuery {
+    path: String,
+    /// Cap on how many bytes we'll read. Defaults to 10 MiB,
+    /// which matches what the Tauri side passed before the
+    /// daemon existed. The Tauri side passes an explicit
+    /// value when reading larger files (e.g. the Mini-IDE
+    /// editor for remote files).
+    #[serde(default = "default_files_max")]
+    max: usize,
+}
+
+fn default_files_max() -> usize {
+    10 * 1024 * 1024
+}
+
+async fn files_read(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<FilesReadQuery>,
+) -> Result<String, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    fs.read_text(&q.path, q.max)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+#[derive(serde::Deserialize)]
+struct FilesWriteBody {
+    path: String,
+    content: String,
+}
+
+async fn files_write(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<FilesWriteBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    fs.write_text(&body.path, &body.content)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct ExecBody {
+    spec: TransportSpec,
+    command: String,
+    password: Option<String>,
+    key_passphrase: Option<String>,
+    jump_password: Option<String>,
+    jump_key_passphrase: Option<String>,
+    cwd: Option<String>,
+}
+
+async fn exec_command(
+    State(state): State<AppState>,
+    Json(body): Json<ExecBody>,
+) -> Result<Json<terminator_core::session::ExecResult>, (StatusCode, String)> {
+    // Same credential-resolution rules as open_session:
+    // the daemon knows nothing about the user's keychain, so
+    // the Tauri side is expected to send resolved secrets
+    // across. We never persist any of these fields.
+    let creds = terminator_core::session::Credentials {
+        secret: body.password,
+        key_passphrase: body.key_passphrase,
+        jump_secret: body.jump_password,
+        jump_key_passphrase: body.jump_key_passphrase,
+    };
+    let cwd = body.cwd.as_deref();
+    state
+        .manager
+        .exec_command(&body.spec, &body.command, creds, cwd)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
+/// Pick a sensible HTTP status from a `core::SessionManager`
+/// error. The most common case is "no such session", which
+/// surfaces as `anyhow!("unknown session {id}")`; everything
+/// else is a 500. Centralizing this here keeps the per-route
+/// handlers from each having to re-derive the mapping.
+fn file_status_for(e: &anyhow::Error) -> (StatusCode, String) {
+    let s = format!("{e:#}");
+    if s.contains("unknown session") {
+        (StatusCode::NOT_FOUND, s)
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, s)
     }
 }
 
