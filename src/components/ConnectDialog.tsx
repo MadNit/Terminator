@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { PasswordField } from "./PasswordField";
-import { secretsBackend, listProfiles } from "../lib/api";
-import type { Profile, SshAuth, TransportSpec } from "../lib/api";
+import { listLocalShells, listProfiles, secretsBackend } from "../lib/api";
+import type { Profile, ShellOption, SshAuth, TransportSpec } from "../lib/api";
 
 export type NewConnection = {
   name: string;
@@ -104,10 +104,48 @@ export function ConnectDialog({
       .catch(() => {});
   }, []);
   const [shell, setShell] = useState(e?.kind === "local" ? (e.shell ?? "") : "");
+  // The "Default" option has the sentinel value "" in the dropdown; "" means
+  // "use the platform default shell" (PowerShell on Windows, $SHELL elsewhere).
+  // When the user edits the path manually we flip into Custom mode and stop
+  // re-syncing the field with the dropdown.
+  const [shellIsCustom, setShellIsCustom] = useState(
+    e?.kind === "local" && e.shell !== null && e.shell !== "",
+  );
+  const [availableShells, setAvailableShells] = useState<ShellOption[]>([]);
   // Editing an existing profile always writes it back; offering "don't save"
   // there would just be a confusing way to discard the edit.
   const [save, setSave] = useState(true);
   const [error, setError] = useState("");
+
+  // Discover installed shells only when the Local tab is shown -- no point
+  // paying the cost on the SSH/RDP tabs where the field is hidden.
+  useEffect(() => {
+    if (kind !== "local" || availableShells.length > 0) return;
+    void listLocalShells()
+      .then((list) => {
+        setAvailableShells(list);
+        // If the profile's stored shell path doesn't match any detected shell,
+        // we treat the field as Custom so the saved value is preserved verbatim.
+        if (shell && !list.some((s) => s.path === shell)) {
+          setShellIsCustom(true);
+        }
+      })
+      .catch(() => {
+        // Discovery failed -- leave the dropdown empty and fall back to the
+        // free-form input, which is the same UX as before this feature.
+      });
+  }, [kind, availableShells.length, shell]);
+
+  // When the user picks something from the dropdown (not Custom), sync the
+  // path. The empty-string sentinel in `shell` means "use platform default".
+  const pickShell = (value: string) => {
+    if (value === "__custom__") {
+      setShellIsCustom(true);
+      return;
+    }
+    setShellIsCustom(false);
+    setShell(value);
+  };
 
   const pickKind = (k: "local" | "ssh" | "rdp") => {
     setKind(k);
@@ -205,15 +243,48 @@ export function ConnectDialog({
         </label>
 
         {kind === "local" ? (
-          <label>
-            Shell
-            <input
-              {...verbatim}
-              value={shell}
-              placeholder="default shell"
-              onChange={(ev) => setShell(ev.target.value)}
-            />
-          </label>
+          <>
+            {availableShells.length > 0 && (
+              <label>
+                Detected shell
+                <select
+                  value={
+                    shellIsCustom
+                      ? "__custom__"
+                      : shell === ""
+                        ? ""
+                        : availableShells.some((s) => s.path === shell)
+                          ? shell
+                          : "__custom__"
+                  }
+                  onChange={(ev) => pickShell(ev.target.value)}
+                >
+                  <option value="">Default (platform default shell)</option>
+                  {availableShells.map((s) => (
+                    <option key={s.path} value={s.path}>
+                      {s.name} — {s.path}
+                    </option>
+                  ))}
+                  <option value="__custom__">Custom path…</option>
+                </select>
+              </label>
+            )}
+            <label>
+              Shell path
+              <input
+                {...verbatim}
+                value={shell}
+                placeholder="leave empty for the platform default shell"
+                readOnly={!shellIsCustom && availableShells.length > 0}
+                onChange={(ev) => {
+                  setShell(ev.target.value);
+                  // Any manual edit flips us into Custom mode so the dropdown
+                  // doesn't keep overwriting what the user typed.
+                  if (availableShells.length > 0) setShellIsCustom(true);
+                }}
+              />
+            </label>
+          </>
         ) : (
           <>
             <div className="row">

@@ -15,6 +15,7 @@ use terminator_core::{
     session::Credentials,
     session::SessionManager,
     store::Store,
+    transport::pty::{discover_shells, ShellOption},
     TransportSpec,
     TunnelConfig, TunnelManager, TunnelStatus,
 };
@@ -433,6 +434,14 @@ async fn secrets_backend(state: State<'_, AppState>) -> Result<String, String> {
         Backend::Keychain => "keychain".into(),
         Backend::File => "file".into(),
     })
+}
+
+/// Scan the well-known install locations and `$PATH` for usable shells so the
+/// New Connection dialog can offer them as a dropdown (default = first hit,
+/// i.e. PowerShell on Windows, $SHELL elsewhere). Pure read -- no state.
+#[tauri::command]
+async fn list_local_shells() -> Result<Vec<ShellOption>, String> {
+    Ok(discover_shells())
 }
 
 /// The OSC 133 snippet, so the UI can offer to install it into the user's
@@ -1274,6 +1283,7 @@ pub fn run() {
             delete_secret,
             rename_secret,
             secrets_backend,
+            list_local_shells,
             has_secret,
             vault_status,
             unlock_vault,

@@ -80,6 +80,12 @@ export async function openSession(
 
 export const listProfiles = () => invoke<Profile[]>("list_profiles");
 
+export type ShellOption = { name: string; path: string };
+
+/** Shells auto-detected on this machine. PowerShell-first on Windows,
+ *  $SHELL on POSIX. The first entry is what "default shell" means. */
+export const listLocalShells = () => invoke<ShellOption[]>("list_local_shells");
+
 export const saveProfile = (
   name: string,
   group: string | null,

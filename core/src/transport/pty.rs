@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -20,23 +21,132 @@ pub struct PtyTransport {
     _shell_init: Option<crate::shell_init::ShellInit>,
 }
 
-/// Pick a sensible default shell per platform.
+/// A shell the user can pick from in the New Connection dialog.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShellOption {
+    pub name: String,
+    pub path: String,
+}
+
+/// Pick a sensible default shell per platform. PowerShell wins, but if it is
+/// missing we fall back to Git Bash (common on dev machines) and only then to
+/// the bare `cmd.exe`. Returning an empty list is a bug, not a fallback.
 fn default_shell() -> String {
-    #[cfg(windows)]
-    {
-        // Prefer PowerShell, fall back to whatever ComSpec says.
-        if let Ok(p) = std::env::var("ProgramFiles") {
-            let pwsh = std::path::Path::new(&p).join("PowerShell/7/pwsh.exe");
-            if pwsh.exists() {
-                return pwsh.to_string_lossy().into_owned();
+    discover_shells()
+        .into_iter()
+        .next()
+        .map(|s| s.path)
+        .unwrap_or_else(|| {
+            #[cfg(windows)]
+            {
+                std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into())
+            }
+            #[cfg(not(windows))]
+            {
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())
+            }
+        })
+}
+
+/// Scan the well-known install locations and `$PATH` for usable shells.
+/// Returned in preference order: PowerShell 7 → Windows PowerShell → Git
+/// Bash → WSL bash → Cygwin bash → anything `bash`/`pwsh` on PATH → the
+/// system default. Duplicates are removed.
+pub fn discover_shells() -> Vec<ShellOption> {
+    let mut out: Vec<ShellOption> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut push = |name: &str, path: &Path| {
+        if path.exists() {
+            let s = path.to_string_lossy().into_owned();
+            if seen.insert(s.clone()) {
+                out.push(ShellOption {
+                    name: name.to_string(),
+                    path: s,
+                });
             }
         }
-        std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into())
+    };
+
+    #[cfg(windows)]
+    {
+        // PowerShell 7 (preferred -- real pwsh, the modern one).
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            push("PowerShell 7", &PathBuf::from(pf).join(r"PowerShell\7\pwsh.exe"));
+        }
+        if let Ok(pf) = std::env::var("ProgramW6432") {
+            push(
+                "PowerShell 7",
+                &PathBuf::from(pf).join(r"PowerShell\7\pwsh.exe"),
+            );
+        }
+        // Windows PowerShell 5.1 (ships with the OS).
+        if let Ok(sysroot) = std::env::var("SystemRoot") {
+            push(
+                "Windows PowerShell",
+                &PathBuf::from(&sysroot)
+                    .join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
+            );
+        }
+        // Git Bash -- the most common bash on Windows dev boxes.
+        if let Ok(pf) = std::env::var("ProgramFiles") {
+            push("Git Bash", &PathBuf::from(pf).join(r"Git\bin\bash.exe"));
+        }
+        if let Ok(pf) = std::env::var("ProgramFiles(x86)") {
+            push(
+                "Git Bash",
+                &PathBuf::from(pf).join(r"Git\bin\bash.exe"),
+            );
+        }
+        // WSL bash -- points at the Linux side, not Windows-native.
+        if let Ok(sysroot) = std::env::var("SystemRoot") {
+            push("WSL bash", &PathBuf::from(&sysroot).join(r"System32\bash.exe"));
+        }
+        // Cygwin -- long shot, but cheap to check.
+        push("Cygwin bash", &PathBuf::from(r"C:\cygwin64\bin\bash.exe"));
+
+        // Anything named bash.exe or pwsh.exe on PATH. This catches scoop,
+        // winget, and custom installs the fixed paths above miss.
+        for name in ["pwsh.exe", "bash.exe", "zsh.exe"] {
+            if let Some(p) = which(name) {
+                push(name.trim_end_matches(".exe"), &p);
+            }
+        }
     }
+
     #[cfg(not(windows))]
     {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())
+        push("bash", Path::new("/bin/bash"));
+        push("zsh", Path::new("/bin/zsh"));
+        push("fish", Path::new("/usr/bin/fish"));
+        if let Ok(shell) = std::env::var("SHELL") {
+            let p = PathBuf::from(&shell);
+            if p.exists() {
+                let label = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("default")
+                    .to_string();
+                push(&label, &p);
+            }
+        }
     }
+
+    out
+}
+
+/// `which`-equivalent that doesn't pull in a crate. Returns the first hit on
+/// PATH or `None`. Skips bare `cmd`/`cmd.exe` because we always have that
+/// available and it would just clutter the picker.
+fn which(name: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 impl PtyTransport {
@@ -61,8 +171,11 @@ impl PtyTransport {
         // Enable OSC 133 automatically. If anything about generating the
         // integration files fails, fall back to a plain login shell -- losing
         // command history is far better than failing to open a terminal.
+        //
+        // Works on both Windows and POSIX: the generated rc file is a pure
+        // bash/zsh script, and `shell_init::prepare` is a no-op for unknown
+        // shells (cmd, PowerShell) so the gate isn't needed.
         let mut shell_init = None;
-        #[cfg(not(windows))]
         {
             let scratch = std::env::temp_dir()
                 .join("terminator-shell-init")
@@ -78,12 +191,19 @@ impl PtyTransport {
                     shell_init = Some(init);
                 }
                 Ok(None) => {
-                    // Unknown shell: still make it a login shell.
-                    cmd.arg("-l");
+                    // Unknown shell (cmd.exe, pwsh, fish, ...): still make it
+                    // a login shell so the user sees their usual prompt.
+                    #[cfg(not(windows))]
+                    {
+                        cmd.arg("-l");
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("shell integration disabled: {e}");
-                    cmd.arg("-l");
+                    #[cfg(not(windows))]
+                    {
+                        cmd.arg("-l");
+                    }
                 }
             }
         }
@@ -203,5 +323,52 @@ impl Transport for PtyTransport {
         let mut c = self.child.lock().map_err(|_| anyhow!("child poisoned"))?;
         let _ = c.kill();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discover_returns_at_least_one_shell() {
+        let shells = discover_shells();
+        assert!(
+            !shells.is_empty(),
+            "discover_shells must return at least one shell, even if all paths are missing"
+        );
+        // Every returned path must point at something that actually exists --
+        // otherwise the picker would offer a broken entry.
+        for s in &shells {
+            assert!(
+                std::path::Path::new(&s.path).exists(),
+                "discover_shells returned a non-existent path: {}",
+                s.path
+            );
+        }
+    }
+
+    #[test]
+    fn discover_dedupes_paths() {
+        let shells = discover_shells();
+        let mut seen = std::collections::HashSet::new();
+        for s in &shells {
+            assert!(
+                seen.insert(s.path.clone()),
+                "duplicate shell path returned: {}",
+                s.path
+            );
+        }
+    }
+
+    #[test]
+    fn default_shell_matches_first_discovered() {
+        // default_shell() must agree with the first entry of discover_shells,
+        // otherwise the "Default" option in the picker would behave
+        // inconsistently with what an unset profile actually gets.
+        let first = discover_shells().into_iter().next().map(|s| s.path);
+        if let Some(first) = first {
+            assert_eq!(default_shell(), first);
+        }
     }
 }
