@@ -581,6 +581,27 @@ impl DaemonClient {
         }
         Ok(())
     }
+
+    /// Push a local clipboard update to the daemon. The daemon's
+    /// CLIPRDR backend uses this to (re-)advertise the local
+    /// clipboard to the RDP server the next time it asks for a
+    /// format list. Text only for v1.
+    pub async fn rdp_local_clipboard(&self, id: Uuid, text: &str) -> Result<()> {
+        let url = format!("{}/rdp/{}/clipboard", self.base_url, id);
+        let resp = self
+            .http
+            .post(&url)
+            .json(&serde_json::json!({ "text": text }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
 }
 
 fn http_err(status: reqwest::StatusCode, body: String, url: &str) -> anyhow::Error {

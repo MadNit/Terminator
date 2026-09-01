@@ -157,6 +157,12 @@ pub fn router(
         .route("/rdp/:id/output", get(rdp_output_sse))
         .route("/rdp/:id/input", post(rdp_input))
         .route("/rdp/:id/resize", post(rdp_resize))
+        // Local clipboard updates. The Tauri side calls this
+        // when the user copies something locally and the RDP
+        // pane has focus -- the daemon's CLIPRDR backend
+        // re-advertises the new text the next time the server
+        // asks for our format list.
+        .route("/rdp/:id/clipboard", post(rdp_local_clipboard))
         .with_state(state)
 }
 
@@ -764,6 +770,25 @@ async fn rdp_resize(
     state
         .rdp
         .resize(id, body.width, body.height)
+        .await
+        .map_err(|e| rdp_status_for(&e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct RdpLocalClipboardBody {
+    text: String,
+}
+
+async fn rdp_local_clipboard(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RdpLocalClipboardBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    state
+        .rdp
+        .set_local_clipboard(id, body.text)
         .await
         .map_err(|e| rdp_status_for(&e))?;
     Ok(StatusCode::NO_CONTENT)

@@ -101,6 +101,14 @@ pub enum RdpInput {
     /// moment focus left stays latched on the server forever, and every
     /// subsequent keystroke arrives shifted or control-modified.
     ReleaseAll,
+    /// The local clipboard text changed. The daemon's CLIPRDR
+    /// backend uses this to (re-)advertise the local clipboard to
+    /// the RDP server the next time the channel asks for a format
+    /// list. Text only for v1; the wire format leaves room for
+    /// `format` later if we add HTML or image support.
+    LocalClipboard {
+        text: String,
+    },
 }
 
 /// What we send the UI.
@@ -124,6 +132,12 @@ pub enum RdpEvent {
     },
     Disconnected {
         reason: String,
+    },
+    /// The remote desktop's clipboard changed and the daemon
+    /// pulled the text back over CLIPRDR. The Tauri side
+    /// writes this into the OS clipboard. Text only for v1.
+    RemoteClipboard {
+        text: String,
     },
 }
 
@@ -728,6 +742,10 @@ fn to_operation(input: RdpInput) -> Option<Operation> {
         // Handled before this point: it expands into a variable number of
         // release operations rather than mapping to a single one.
         RdpInput::ReleaseAll => return None,
+        // Clipboard is handled at a higher layer (the CLI stream
+        // routes it to the CLIPRDR backend, not the keyboard/mouse
+        // pump). Mapping to None is the right escape.
+        RdpInput::LocalClipboard { .. } => return None,
     })
 }
 

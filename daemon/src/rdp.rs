@@ -66,6 +66,11 @@ pub struct DaemonRdpManager {
     /// Host/port/user per session, for the `RdpInfo` list view.
     endpoints: Mutex<HashMap<Uuid, EndpointMeta>>,
     opened_at: Mutex<HashMap<Uuid, i64>>,
+    /// Latest local clipboard text per session, written by
+    /// the Tauri side via `POST /rdp/{id}/clipboard` and read
+    /// by the CLIPRDR backend when the server asks for our
+    /// format list. Cleared on `close`.
+    local_clipboards: Mutex<HashMap<Uuid, String>>,
 }
 
 impl DaemonRdpManager {
@@ -76,6 +81,7 @@ impl DaemonRdpManager {
             sizes: Mutex::new(HashMap::new()),
             endpoints: Mutex::new(HashMap::new()),
             opened_at: Mutex::new(HashMap::new()),
+            local_clipboards: Mutex::new(HashMap::new()),
         }
     }
 
@@ -162,6 +168,40 @@ impl DaemonRdpManager {
         Ok(())
     }
 
+    /// Update the local clipboard text for a session. The daemon's
+    /// CLIPRDR backend reads this on the next `on_request_format_list`
+    /// and re-advertises it to the server. Text only for v1.
+    ///
+    /// For Session 3 part 2, this currently just stores the value in
+    /// `local_clipboards`; the actual wire-up to the
+    /// `CliprdrClient` is the engine work tracked as a follow-up.
+    pub async fn set_local_clipboard(&self, id: Uuid, text: String) -> Result<()> {
+        // Sanity-check the session exists. Avoid silently accepting
+        // clipboard updates for a session that's already closed --
+        // the caller would think the copy succeeded when in fact
+        // the daemon has nowhere to send it.
+        if !self.channels.lock().await.contains_key(&id) {
+            return Err(anyhow!("no such rdp session: {id}"));
+        }
+        self.local_clipboards
+            .lock()
+            .await
+            .insert(id, text);
+        Ok(())
+    }
+
+    /// Read the current local clipboard text for a session. Returns
+    /// `None` if the session has no recorded local text (either the
+    /// session is unknown, or the caller never set it).
+    #[allow(dead_code)] // Used by the CLIPRDR backend in a follow-up commit.
+    pub async fn local_clipboard(&self, id: Uuid) -> Option<String> {
+        self.local_clipboards
+            .lock()
+            .await
+            .get(&id)
+            .cloned()
+    }
+
     /// Tear down a live session. The `RdpSession` drop sends
     /// `Shutdown` on its command channel, which the engine task
     /// handles and then the broadcast sender drops -- SSE
@@ -177,6 +217,7 @@ impl DaemonRdpManager {
         self.sizes.lock().await.remove(&id);
         self.endpoints.lock().await.remove(&id);
         self.opened_at.lock().await.remove(&id);
+        self.local_clipboards.lock().await.remove(&id);
         Ok(())
     }
 

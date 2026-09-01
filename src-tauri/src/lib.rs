@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 mod daemon_client;
 use daemon_client::{DaemonClient, OutputEvent as DaemonOutputEvent};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 /// Events pushed to the webview for a single session.
 #[derive(Clone, Serialize)]
@@ -594,9 +595,17 @@ async fn stop_tunnel(state: State<'_, AppState>, id: String) -> Result<(), Strin
 ///
 /// Returns the desktop size the server actually granted, which is often not
 /// the size we asked for.
+///
+/// Clipboard: at open time we read the current local OS clipboard
+/// and seed the daemon's CLIPRDR backend with it. The drain task
+/// writes `RdpEvent::RemoteClipboard` back to the OS clipboard
+/// when the remote desktop's clipboard changes. The webview is
+/// responsible for forwarding subsequent local clipboard
+/// changes via `rdp_local_clipboard` while the pane has focus.
 #[tauri::command]
 async fn open_rdp(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     spec: TransportSpec,
     width: u16,
     height: u16,
@@ -644,13 +653,43 @@ async fn open_rdp(
         .inspect_err(|err| tracing::error!("open_rdp failed: {err:#}"))
         .map_err(e)?;
 
+    // Seed the daemon with the current local clipboard so the
+    // CLIPRDR backend can advertise it the next time the server
+    // asks for a format list. A failure here is non-fatal: the
+    // session is open, we just won't have any local clipboard
+    // data ready for the server until the webview pushes an
+    // update through `rdp_local_clipboard`.
+    if let Ok(initial) = app.clipboard().read_text() {
+        if let Err(err) = state.daemon.rdp_local_clipboard(id, &initial).await {
+            tracing::debug!("seed rdp clipboard: {err:#}");
+        }
+    }
+
     // Drain the daemon's SSE stream of `RdpEvent`s into the
     // Tauri `Channel` the webview is already listening on. Same
     // pattern `open_session` uses for PTY/SSH `OutputEvent`s.
+    //
+    // `RdpEvent::RemoteClipboard` is also written to the OS
+    // clipboard here so the user can paste it into any local
+    // app. Text only for v1.
+    let channel = channel.clone();
+    // `app` is `AppHandle` (Arc internally, cheap to clone,
+    // `'static`). Move a clone into the spawn so the drain task
+    // owns a handle that outlives the function frame; we then
+    // call `app.clipboard().write_text(...)` inside the loop.
+    let app = app.clone();
     tokio::spawn(async move {
         use futures::StreamExt;
         while let Some(item) = sse.next().await {
             match item {
+                Ok(RdpEvent::RemoteClipboard { text }) => {
+                    if let Err(err) = app.clipboard().write_text(text.clone()) {
+                        tracing::warn!("write local clipboard: {err:#}");
+                    }
+                    if channel.send(RdpEvent::RemoteClipboard { text }).is_err() {
+                        break;
+                    }
+                }
                 Ok(ev) => {
                     if channel.send(ev).is_err() {
                         break;
@@ -707,6 +746,20 @@ async fn rdp_resize(
 async fn close_rdp(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
     state.daemon.rdp_close(id).await.map_err(e)
+}
+
+/// Push a local clipboard update for a live RDP session. The
+/// webview calls this whenever the OS clipboard changes while
+/// the RDP pane has focus, so the daemon's CLIPRDR backend can
+/// re-advertise the new text. Text only for v1.
+#[tauri::command]
+async fn rdp_local_clipboard(
+    state: State<'_, AppState>,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    let id = Uuid::parse_str(&id).map_err(e)?;
+    state.daemon.rdp_local_clipboard(id, &text).await.map_err(e)
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,6 +1381,7 @@ pub fn run() {
             rdp_input,
             rdp_resize,
             close_rdp,
+            rdp_local_clipboard,
             local_home,
             list_local_dir,
             stage_path,
