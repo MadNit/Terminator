@@ -53,6 +53,11 @@ pub struct ExecResult {
 pub struct Session {
     pub id: Uuid,
     pub title: String,
+    /// What the caller asked us to open. Kept around so the daemon
+    /// can re-list sessions after the UI disconnects and reconnect
+    /// later -- otherwise we'd have to fish the spec out of the
+    /// transport, which the trait doesn't currently expose.
+    pub spec: TransportSpec,
     transport: Arc<dyn Transport>,
     taps: TapSet,
     pub log_paths: LogPaths,
@@ -189,6 +194,7 @@ impl SessionManager {
         let session = Arc::new(Session {
             id,
             title: spec.label(),
+            spec: spec.clone(),
             transport: transport.clone(),
             taps: taps.clone(),
             log_paths,
@@ -243,6 +249,24 @@ impl SessionManager {
         }
         self.reap(id);
         Ok(())
+    }
+
+    /// Snapshot of every session id currently held. Order is
+    /// unspecified; callers that care should sort. Used by the
+    /// daemon's `GET /sessions` to enumerate without locking the
+    /// per-session refs that `get` exposes.
+    pub fn list_sessions(&self) -> Vec<Uuid> {
+        self.inner
+            .lock()
+            .map(|m| m.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns the spec the session was opened with, or `None` if
+    /// the session id is unknown. Cheaper than `list_sessions` +
+    /// `get` because we don't take the lock twice.
+    pub fn spec(&self, id: Uuid) -> Option<TransportSpec> {
+        self.inner.lock().ok().and_then(|m| m.get(&id).map(|s| s.spec.clone()))
     }
 
     pub fn logs(&self, id: Uuid) -> Result<LogPaths> {

@@ -1,0 +1,46 @@
+[package]
+name = "terminator-daemon"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Long-lived PTY/session host. Keeps terminals alive when the UI disconnects."
+
+[[bin]]
+name = "terminator-daemon"
+path = "src/main.rs"
+
+[dependencies]
+terminator-core = { path = "../core", features = ["ssh", "rdp"] }
+
+# Workspace pins -- never reach for a newer major, see ../Cargo.toml for the
+# full rationale on the russh/ironrdp pre-release chain.
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+
+# HTTP layer. axum is the lightest first-class option that gives us routing
+# + extractors + SSE for free, and it lives in the tokio stack.
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace"] }
+hyper = "1"
+
+# For graceful shutdown signals (Ctrl-C, SIGTERM on POSIX).
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Logs.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# SSE wire format carries base64 for binary chunks.
+base64 = "0.22"
+# async-stream powers the `stream!` macro used to bridge a broadcast
+# Receiver to axum's Sse response.
+async-stream = "0.3"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "src-tauri"]
+members = ["core", "daemon", "src-tauri"]
 
 # Dependency pins live here so the core and the app can never drift apart.
 #
