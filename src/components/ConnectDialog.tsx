@@ -35,13 +35,22 @@ export function ConnectDialog({
   onCancel,
   onConnect,
   edit,
+  prefillSpec,
 }: {
   onCancel: () => void;
   onConnect: (c: NewConnection) => void;
   /** When set, the dialog edits this profile instead of creating a new one. */
   edit?: Profile;
+  /**
+   * Pre-fill the form from this spec, without binding the result
+   * to any saved profile. Used for the "Reopen" flow on a
+   * session the daemon remembers but whose PTY has died: the
+   * user gets a one-shot connection with the same target, no
+   * profile gets created or modified.
+   */
+  prefillSpec?: TransportSpec;
 }) {
-  const e = edit?.spec;
+  const e = edit?.spec ?? prefillSpec;
   const [kind, setKind] = useState<"local" | "ssh" | "rdp">(e?.kind ?? "ssh");
   const [name, setName] = useState(edit?.name ?? "");
   const [host, setHost] = useState(e && e.kind !== "local" ? e.host : "");
@@ -113,8 +122,10 @@ export function ConnectDialog({
   );
   const [availableShells, setAvailableShells] = useState<ShellOption[]>([]);
   // Editing an existing profile always writes it back; offering "don't save"
-  // there would just be a confusing way to discard the edit.
-  const [save, setSave] = useState(true);
+  // there would just be a confusing way to discard the edit. Prefilling from
+  // a "previously open" session defaults to NOT saving, so the user gets
+  // a one-shot connection without silently creating a profile.
+  const [save, setSave] = useState(edit ? true : false);
   const [error, setError] = useState("");
 
   // Discover installed shells only when the Local tab is shown -- no point

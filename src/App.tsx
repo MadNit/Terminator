@@ -110,6 +110,10 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState<Profile | null>(null);
   /** Profile being edited in the connection dialog. */
   const [editing, setEditing] = useState<Profile | null>(null);
+  /** Pre-fill the Connect dialog from this spec, without
+   *  binding to any saved profile. Used by the "Reopen" button
+   *  on a previously-open session. */
+  const [prefillSpec, setPrefillSpec] = useState<TransportSpec | null>(null);
   /** Sessions the daemon is still hosting. We poll once on app
    *  start: if the user closed the app while a tab was open,
    *  the daemon kept the PTY alive and these are the tabs we
@@ -891,6 +895,7 @@ export default function App() {
                                     <span className="reattach-when">
                                       {new Date(s.openedAtMs).toLocaleString()}
                                     </span>
+                                    <button onClick={() => setPrefillSpec(s.spec)}>Reopen</button>
                                   </li>
                                 ))}
                               </ul>
@@ -947,14 +952,19 @@ export default function App() {
         <span className="dim">{logs}</span>
       </div>
 
-      {(dialog || editing) && (
+      {(dialog || editing || prefillSpec) && (
         <ConnectDialog
           edit={editing ?? undefined}
+          prefillSpec={prefillSpec ?? undefined}
           onCancel={() => {
             setDialog(false);
             setEditing(null);
+            setPrefillSpec(null);
           }}
-          onConnect={(c) => void handleConnect(c)}
+          onConnect={(c) => {
+            setPrefillSpec(null);
+            void handleConnect(c);
+          }}
         />
       )}
 

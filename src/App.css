@@ -508,6 +508,7 @@ html, body, #root {
   color: var(--fg);
 }
 .reattach-target { font-family: var(--mono); }
+.reattach-when { color: var(--dim); font-size: 11px; }
 .reattach-divider {
   font-size: 11px; text-transform: uppercase;
   letter-spacing: 0.05em; color: var(--dim);
