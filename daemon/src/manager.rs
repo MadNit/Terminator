@@ -298,6 +298,17 @@ impl DaemonSessionManager {
             .await
     }
 
+    /// Look up the on-disk log paths for a session. The Tauri
+    /// side used to ask the stale `state.helpers` for these;
+    /// now every log-helper Tauri command hits the daemon so
+    /// the path resolution stays in one place.
+    pub async fn session_logs(
+        &self,
+        id: Uuid,
+    ) -> Result<terminator_core::session::LogPaths> {
+        self.core.logs(id)
+    }
+
     /// Snapshot of the buffered output for reattach. Returns an
     /// empty `Vec` for an unknown session id so the HTTP handler
     /// can answer with 200 + `[]` rather than 404.

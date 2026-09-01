@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("write port file {}", port_file.display()))?;
     tracing::info!(port = bound_port, data_dir = %data_dir.display(), "daemon ready");
 
-    let app = server::router(manager);
+    let app = server::router(manager, log_dir);
     axum::serve(listener, app)
         .with_graceful_shutdown(server::shutdown_signal())
         .await

@@ -26,7 +26,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json,
     },
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use bytes::Bytes;
@@ -47,6 +47,12 @@ struct AppState {
     /// Wall-clock time the daemon started. Used by the health check
     /// and any future `/stats` endpoint.
     started_at_ms: i64,
+    /// On-disk log directory. Owned by the daemon (the same
+    /// `SessionManager` writes `.cast` / `.log` files here for
+    /// every open session); the Tauri side just reads the path
+    /// back when it needs to surface log file management to the
+    /// user.
+    log_dir: Arc<std::path::PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,10 +97,11 @@ struct ResizeRequest {
     rows: u16,
 }
 
-pub fn router(manager: Arc<DaemonSessionManager>) -> Router {
+pub fn router(manager: Arc<DaemonSessionManager>, log_dir: std::path::PathBuf) -> Router {
     let state = AppState {
         manager,
         started_at_ms: now_ms(),
+        log_dir: Arc::new(log_dir),
     };
     Router::new()
         .route("/health", get(health))
@@ -115,7 +122,19 @@ pub fn router(manager: Arc<DaemonSessionManager>) -> Router {
         .route("/sessions/:id/files/rename", post(files_rename))
         .route("/sessions/:id/files/read", get(files_read))
         .route("/sessions/:id/files/write", post(files_write))
+        .route("/sessions/:id/files/upload", post(files_upload))
+        .route("/sessions/:id/files/download", post(files_download))
+        .route("/sessions/:id/files/search", post(files_search))
         .route("/sessions/:id/exec", post(exec_command))
+        // Log file management. Lets the Tauri side delete
+        // archived sessions and read the on-disk `.cast` /
+        // `.log` files without ever knowing where they live
+        // on disk.
+        .route("/log_dir", get(log_dir_route))
+        .route("/session_logs", get(session_logs_route))
+        .route("/session_logs/:dir_name", delete(delete_session_log_route))
+        .route("/log_file", get(log_file_route))
+        .route("/sessions/:id/logs", get(session_log_paths_route))
         .with_state(state)
 }
 
@@ -466,6 +485,94 @@ async fn files_write(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// -- file transfer (local <-> remote) --------------------------------
+//
+// `local_path` is on the SAME machine as the daemon: the Tauri app
+// is the only client on 127.0.0.1, and both processes resolve the
+// user data dir identically. The Tauri side is responsible for any
+// staging/validation (e.g. the `safe_file_name` helper on the drag
+// drop path); the daemon trusts the path it is given.
+//
+// Progress events are NOT streamed: the transfer is one HTTP
+// round-trip, so the channel-based progress UI the Tauri side had
+// before will only see the final `Done` (or `Failed`) event. The
+// `RemoteFs` impls still report progress to the core's `ProgressSink`
+// if one is supplied; we just don't surface it over HTTP yet.
+
+#[derive(serde::Deserialize)]
+struct FilesUploadBody {
+    local_path: String,
+    remote: String,
+}
+
+#[derive(serde::Serialize)]
+struct FilesUploadResponse {
+    bytes: u64,
+}
+
+async fn files_upload(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<FilesUploadBody>,
+) -> Result<Json<FilesUploadResponse>, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    let local = std::path::PathBuf::from(&body.local_path);
+    // `RemoteFs::upload` does its own chunked read; for v1 we
+    // pass a no-op progress sink. Per-byte progress over HTTP
+    // is a separate change.
+    let sink: terminator_core::files::ProgressSink = std::sync::Arc::new(|_| {});
+    let bytes = fs
+        .upload(&local, &body.remote, sink)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(FilesUploadResponse { bytes }))
+}
+
+#[derive(serde::Deserialize)]
+struct FilesDownloadBody {
+    remote: String,
+    local_path: String,
+}
+
+async fn files_download(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<FilesDownloadBody>,
+) -> Result<Json<FilesUploadResponse>, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    let local = std::path::PathBuf::from(&body.local_path);
+    let sink: terminator_core::files::ProgressSink = std::sync::Arc::new(|_| {});
+    let bytes = fs
+        .download(&body.remote, &local, sink)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(FilesUploadResponse { bytes }))
+}
+
+#[derive(serde::Deserialize)]
+struct FilesSearchBody {
+    path: String,
+    options: terminator_core::files::SearchOptions,
+}
+
+async fn files_search(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<FilesSearchBody>,
+) -> Result<
+    Json<Vec<terminator_core::files::FileSearchResult>>,
+    (StatusCode, String),
+> {
+    let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
+    fs.search(&body.path, &body.options)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))
+}
+
 #[derive(serde::Deserialize)]
 struct ExecBody {
     spec: TransportSpec,
@@ -537,4 +644,204 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Log file management
+// ---------------------------------------------------------------------------
+//
+// These routes existed as direct filesystem reads in the Tauri side
+// (against the stale `state.helpers` SessionManager) and moved to
+// the daemon so the on-disk log directory is owned by exactly one
+// process. The Tauri side is now a pure proxy.
+
+/// One entry in the `GET /session_logs` response. Mirrors
+/// `SessionLogItem` on the Tauri side.
+#[derive(Debug, Serialize)]
+struct SessionLogItem {
+    id: String,
+    dir_name: String,
+    timestamp: u64,
+    cast_path: String,
+    plain_path: String,
+    plain_size: u64,
+    cast_size: u64,
+}
+
+async fn log_dir_route(State(state): State<AppState>) -> String {
+    state.log_dir.to_string_lossy().into_owned()
+}
+
+async fn session_logs_route(State(state): State<AppState>) -> Json<Vec<SessionLogItem>> {
+    let log_dir = state.log_dir.clone();
+    // Spawn-block: directory walk can block on a stalled
+    // network mount and we don't want to freeze unrelated
+    // sessions.
+    let items = tokio::task::spawn_blocking(move || walk_log_dir(&log_dir))
+        .await
+        .unwrap_or_default();
+    Json(items)
+}
+
+fn walk_log_dir(log_dir: &std::path::Path) -> Vec<SessionLogItem> {
+    let mut items = Vec::new();
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return items;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let cast_path = path.join("session.cast");
+        let plain_path = path.join("session.log");
+        let cast_size = std::fs::metadata(&cast_path).map(|m| m.len()).unwrap_or(0);
+        let plain_size = std::fs::metadata(&plain_path).map(|m| m.len()).unwrap_or(0);
+        let parts: Vec<&str> = dir_name.splitn(2, '-').collect();
+        let timestamp = parts
+            .first()
+            .and_then(|ts| ts.parse::<u64>().ok())
+            .unwrap_or(0);
+        items.push(SessionLogItem {
+            id: dir_name.clone(),
+            dir_name,
+            timestamp,
+            cast_path: cast_path.to_string_lossy().to_string(),
+            plain_path: plain_path.to_string_lossy().to_string(),
+            plain_size,
+            cast_size,
+        });
+    }
+    items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    items
+}
+
+async fn delete_session_log_route(
+    State(state): State<AppState>,
+    Path(dir_name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let log_dir = state.log_dir.clone();
+    // The Tauri side used to call `safe_file_name` on the
+    // directory name before deleting; the same regex (only
+    // `[A-Za-z0-9_-]`) is applied here so the path can never
+    // escape the log directory via `..` traversal.
+    let safe = safe_log_dir_name(&dir_name)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    tokio::task::spawn_blocking(move || {
+        let path = log_dir.join(&safe);
+        if path.exists() {
+            std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("join error: {e}")))?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Allow only `[A-Za-z0-9_-]`, no leading dot, no path
+/// separator. Mirrors the Tauri side's `safe_file_name` helper.
+fn safe_log_dir_name(name: &str) -> std::result::Result<String, String> {
+    if name.is_empty()
+        || name.contains("..")
+        || name.contains('/')
+        || name.contains('\\')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!("invalid directory name: {name}"));
+    }
+    Ok(name.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+struct LogFileQuery {
+    path: String,
+}
+
+async fn log_file_route(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<LogFileQuery>,
+) -> Result<String, (StatusCode, String)> {
+    let log_dir = state.log_dir.clone();
+    let path = q.path;
+    tokio::task::spawn_blocking(move || read_log_file(&log_dir, &path))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("join error: {e}")))?
+}
+
+fn read_log_file(
+    log_dir: &std::path::Path,
+    path: &str,
+) -> std::result::Result<String, (StatusCode, String)> {
+    let p = std::path::Path::new(path);
+    if !p.exists() {
+        return Err((StatusCode::NOT_FOUND, format!("File not found: {path}")));
+    }
+    // Reject any path that is not inside the daemon's log
+    // directory. The Tauri side already passes paths the
+    // daemon returned, but a hostile or buggy caller could
+    // still try to read arbitrary files.
+    let canonical_log_dir = match std::fs::canonicalize(log_dir) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("canonicalize log dir: {e}"),
+            ))
+        }
+    };
+    let canonical_path = match std::fs::canonicalize(p) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("canonicalize path: {e}"),
+            ))
+        }
+    };
+    if !canonical_path.starts_with(&canonical_log_dir) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("path is outside the log directory: {path}"),
+        ));
+    }
+    // Helper: convert a `String` error from `map_err(|e| e.to_string())`
+    // into the `(StatusCode, String)` the handler returns.
+    let s500 = |e: String| (StatusCode::INTERNAL_SERVER_ERROR, e);
+    let meta = std::fs::metadata(&canonical_path).map_err(|e| e.to_string()).map_err(s500)?;
+    if meta.len() > 5 * 1024 * 1024 {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&canonical_path)
+            .map_err(|e| e.to_string())
+            .map_err(s500)?;
+        let mut buffer = vec![0u8; 5 * 1024 * 1024];
+        let n = file.read(&mut buffer).map_err(|e| e.to_string()).map_err(s500)?;
+        let mut s = String::from_utf8_lossy(&buffer[..n]).to_string();
+        s.push_str("\n\n... [Log truncated at 5MB] ...");
+        return Ok(s);
+    }
+    std::fs::read_to_string(&canonical_path)
+        .map_err(|e| e.to_string())
+        .map_err(s500)
+}
+
+async fn session_log_paths_route(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let id = parse_id(&id).map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let p = state
+        .manager
+        .session_logs(id)
+        .await
+        .map_err(|e| file_status_for(&e))?;
+    Ok(Json(serde_json::json!({ "cast": p.cast, "plain": p.plain })))
 }

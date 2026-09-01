@@ -322,6 +322,153 @@ impl DaemonClient {
         }
         Ok(())
     }
+
+    // -- file transfer (local <-> remote) ----------------------------
+    //
+    // The daemon owns the SSH connection, so the local file on the
+    // Tauri side is read by the daemon (they are on the same
+    // machine, sharing the user data dir). Progress is not
+    // streamed yet -- the Tauri command sends a single `Done`
+    // event on the channel with the total bytes.
+
+    pub async fn files_upload(
+        &self,
+        id: Uuid,
+        local_path: &str,
+        remote: &str,
+    ) -> Result<u64> {
+        let url = format!("{}/sessions/{}/files/upload", self.base_url, id);
+        let body = serde_json::json!({
+            "local_path": local_path,
+            "remote": remote,
+        });
+        let resp = self.http.post(&url)
+            .json(&body)
+            .send().await.with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        let parsed: FilesTransferResponse = resp.json().await
+            .context("parse files_upload body")?;
+        Ok(parsed.bytes)
+    }
+
+    pub async fn files_download(
+        &self,
+        id: Uuid,
+        remote: &str,
+        local_path: &str,
+    ) -> Result<u64> {
+        let url = format!("{}/sessions/{}/files/download", self.base_url, id);
+        let body = serde_json::json!({
+            "remote": remote,
+            "local_path": local_path,
+        });
+        let resp = self.http.post(&url)
+            .json(&body)
+            .send().await.with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        let parsed: FilesTransferResponse = resp.json().await
+            .context("parse files_download body")?;
+        Ok(parsed.bytes)
+    }
+
+    pub async fn files_search(
+        &self,
+        id: Uuid,
+        path: &str,
+        options: &terminator_core::files::SearchOptions,
+    ) -> Result<Vec<terminator_core::files::FileSearchResult>> {
+        let url = format!("{}/sessions/{}/files/search", self.base_url, id);
+        let body = serde_json::json!({
+            "path": path,
+            "options": options,
+        });
+        let resp = self.http.post(&url)
+            .json(&body)
+            .send().await.with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.json().await.context("parse files_search body")
+    }
+
+    // -- log file management -----------------------------------------
+    //
+    // These proxy the Tauri commands that used to read from
+    // `state.helpers.log_dir()` / `state.helpers.logs()`. Now that
+    // the daemon owns the on-disk log directory, every read or
+    // delete goes through HTTP so the path resolution stays in one
+    // process.
+
+    pub async fn log_dir(&self) -> Result<String> {
+        let url = format!("{}/log_dir", self.base_url);
+        let resp = self.http.get(&url).send().await
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.text().await.context("read log_dir body")
+    }
+
+    pub async fn list_session_logs(&self) -> Result<serde_json::Value> {
+        let url = format!("{}/session_logs", self.base_url);
+        let resp = self.http.get(&url).send().await
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.json().await.context("parse session_logs body")
+    }
+
+    pub async fn delete_session_log(&self, dir_name: &str) -> Result<()> {
+        let url = format!("{}/session_logs/{}", self.base_url, dir_name);
+        let resp = self.http.delete(&url).send().await
+            .with_context(|| format!("DELETE {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        Ok(())
+    }
+
+    pub async fn read_log_file(&self, path: &str) -> Result<String> {
+        let url = format!("{}/log_file", self.base_url);
+        let resp = self.http.get(&url)
+            .query(&[("path", path)])
+            .send().await.with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.text().await.context("read log_file body")
+    }
+
+    pub async fn session_log_paths(&self, id: Uuid) -> Result<serde_json::Value> {
+        let url = format!("{}/sessions/{}/logs", self.base_url, id);
+        let resp = self.http.get(&url).send().await
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.json().await.context("parse session_log_paths body")
+    }
 }
 
 fn http_err(status: reqwest::StatusCode, body: String, url: &str) -> anyhow::Error {
@@ -332,6 +479,15 @@ fn http_err(status: reqwest::StatusCode, body: String, url: &str) -> anyhow::Err
 #[derive(Debug, Deserialize)]
 struct OpenResponse {
     id: String,
+}
+
+/// Wire shape for `POST /sessions/{id}/files/upload` and
+/// `POST /sessions/{id}/files/download`. The daemon returns the
+/// number of bytes transferred so the Tauri command can emit a
+/// `Done` event on its progress channel.
+#[derive(Debug, Deserialize)]
+struct FilesTransferResponse {
+    bytes: u64,
 }
 
 /// `SseStream` is a thin wrapper around a reqwest `Bytes` stream
