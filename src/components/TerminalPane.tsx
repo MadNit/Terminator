@@ -79,6 +79,18 @@ export function TerminalPane({
   const [ended, setEnded] = useState<string | null>(null);
   const endedRef = useRef(false);
 
+  // ---- fish-style autosuggest state (per-pane, in-memory) ----
+  // History grows as the user submits commands (captured from OSC 133 ; E,
+  // see the parser hook below). The current line buffer is reconstructed
+  // locally from user keystrokes; if it ever diverges from the shell's
+  // real buffer (e.g. mid-paste, mid-Tab-completion) the suggestion
+  // simply looks wrong for one keystroke -- it self-corrects on the next
+  // printable key the user types.
+  const autosuggestEnabled = useRef(true);
+  const commandHistory = useRef<string[]>([]);
+  const autosuggestInput = useRef<string>("");
+  const autosuggestGhost = useRef<string | null>(null);
+
   // Auto-reconnect state
   const [autoReconnectCountdown, setAutoReconnectCountdown] = useState<number | null>(null);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
@@ -158,6 +170,66 @@ export function TerminalPane({
         window.open(uri, "_blank", "noopener,noreferrer");
       }),
     );
+
+    // OSC 52 clipboard sync: the shell writes the clipboard through us
+    // (think `tmux set-buffer`, or `:let @+ = 'foo'` in vim) and the
+    // selection shows up in the OS clipboard. We deliberately do NOT
+    // support the read direction (`?` payload) -- that would require
+    // pushing a reply back up the PTY, which adds a fair amount of
+    // plumbing for a feature nobody actually needs in a terminal app.
+    term.parser.registerOscHandler(52, (data) => {
+      // data is e.g. "c;SGVsbG8=" or "c;" (clear) or "p;..." (other selection).
+      const semi = data.indexOf(";");
+      if (semi < 0) return false;
+      const selection = data.slice(0, semi);
+      if (selection !== "c") return false;
+      const payload = data.slice(semi + 1);
+      if (!payload) return true; // empty == clear, nothing to do
+      let text: string;
+      try {
+        text = atob(payload);
+      } catch (e) {
+        logFrontend("warn", `OSC 52 base64 decode failed: ${String(e)}`);
+        return true;
+      }
+      void writeClipboard(text);
+      return true;
+    });
+
+    // OSC 133 (shell integration) -- we use the "E" (end of input) marker to
+    // capture the just-submitted command into our history. We intentionally
+    // ignore the prompt-start (A), command-start (B) and command-exit (C;D)
+    // markers: those are for the Rust tap layer, which does the real history
+    // indexing into the FTS store. This handler is just for autosuggest.
+    term.parser.registerOscHandler(133, (data) => {
+      // data is e.g. "E;git status" or "A" or "C;0" or "D;0"
+      if (data.length < 2 || data[1] !== ";") return false;
+      const sub = data[0];
+      if (sub === "E") {
+        const cmd = data.slice(2).trim();
+        if (!cmd) return false;
+        const hist = commandHistory.current;
+        // Move-to-front dedup so a re-run suggestion doesn't keep the same
+        // entry twice in the recent list.
+        const existing = hist.indexOf(cmd);
+        if (existing >= 0) hist.splice(existing, 1);
+        hist.unshift(cmd);
+        if (hist.length > 500) hist.length = 500;
+        return true;
+      }
+      if (sub === "A") {
+        // Fresh prompt. Drop any leftover ghost so the next character
+        // typed doesn't visibly start inside the previous suggestion.
+        if (autosuggestGhost.current) {
+          const old = autosuggestGhost.current;
+          term.write(`\x1b[${old.length}C\x1b[${old.length}X\x1b[${old.length}D`);
+          autosuggestGhost.current = null;
+        }
+        autosuggestInput.current = "";
+        return true;
+      }
+      return false;
+    });
 
     // Register Smart Link Provider for file:line jump and IP address copy
     term.registerLinkProvider({
@@ -438,6 +510,77 @@ export function TerminalPane({
         finish("[connection failed]");
       });
 
+    // ---- fish-style autosuggest render ----
+    //
+    // Strategy: keep a "ghost" rendered in dim text after the cursor. On
+    // every keystroke:
+    //   1. Clear the old ghost (move forward N, ECH N chars, move back N)
+    //   2. Look up a new suggestion from history (longest-prefix match)
+    //   3. If found, write the suffix in dim and pull the cursor back
+    //
+    // The cursor ends up at the end of the typed input, not the end of
+    // the ghost -- that way the next printable char overwrites the first
+    // ghost char (which we then re-render).
+    const renderAutosuggest = () => {
+      if (!autosuggestEnabled.current) return;
+      // Clear the previous ghost, if any. The cursor is sitting at the
+      // end of the typed text; the ghost is to its right.
+      const old = autosuggestGhost.current;
+      if (old && old.length > 0) {
+        // Move forward to end of ghost, ECH it away, move back.
+        term.write(`\x1b[${old.length}C\x1b[${old.length}X\x1b[${old.length}D`);
+      }
+      autosuggestGhost.current = null;
+      const input = autosuggestInput.current;
+      if (!input) return;
+      const match = commandHistory.current.find(
+        (h) => h !== input && h.startsWith(input),
+      );
+      if (!match) return;
+      const ghost = match.slice(input.length);
+      if (!ghost) return;
+      // Dim gray on a dark theme reads as a faint hint without competing
+      // with the prompt. 90 = bright black, i.e. 38;5;244 ish.
+      term.write(`\x1b[2m${ghost}\x1b[0m`);
+      term.write(`\x1b[${ghost.length}D`); // pull cursor back to end of typed
+      autosuggestGhost.current = ghost;
+    };
+
+    // Walk `data` (which is what xterm received from the keyboard) and
+    // keep our local "current input" model in sync. We only need to track
+    // printable ASCII and a couple of editing keys; anything else
+    // (arrows, escape sequences, etc.) is left alone and the suggestion
+    // just self-corrects on the next printable.
+    const updateInputFromKeystrokes = (data: string) => {
+      for (let i = 0; i < data.length; i++) {
+        const ch = data[i];
+        if (ch === "\r" || ch === "\n") {
+          // Command submitted -- drop our local state, the OSC 133 handler
+          // already grabbed the canonical command into history.
+          autosuggestInput.current = "";
+          return;
+        }
+        if (ch === "\x7f" || ch === "\b") {
+          autosuggestInput.current = autosuggestInput.current.slice(0, -1);
+        } else if (ch === "\x15") {
+          // Ctrl+U: kill line backwards to start. Common in bash readline.
+          autosuggestInput.current = "";
+        } else if (ch === "\x17") {
+          // Ctrl+W: delete previous word. Hard to model exactly, so wipe
+          // back to the last whitespace boundary we can find.
+          const trimmed = autosuggestInput.current.replace(/\S*\s*$/, "");
+          autosuggestInput.current = trimmed;
+        } else if (ch === "\x1b") {
+          // Escape sequence (arrow keys, Home/End, etc.) -- bail out, the
+          // shell is doing its own line editing and our model no longer
+          // tracks truth. Next printable key resets things.
+          return;
+        } else if (ch >= " " && ch <= "~") {
+          autosuggestInput.current += ch;
+        }
+      }
+    };
+
     const onData = term.onData((data) => {
       if (endedRef.current) {
         const k = data.toLowerCase();
@@ -450,12 +593,36 @@ export function TerminalPane({
         }
         return;
       }
+
+      // Right arrow: if there's a ghost showing, accept it. The arrow
+      // itself is suppressed -- the shell would otherwise move the cursor
+      // one column right inside the ghost, which looks broken. The ghost's
+      // text gets sent to the PTY as ordinary keystrokes.
+      if (autosuggestEnabled.current && data === "\x1b[C" && autosuggestGhost.current) {
+        const ghost = autosuggestGhost.current;
+        // Move cursor forward to the end of the ghost (it's already there
+        // visually, but \x1b[C at end-of-line is harmless), then send the
+        // text. Our local input model gets the appended chars.
+        term.write(`\x1b[${ghost.length}C`);
+        if (idRef.current) {
+          void writeSession(idRef.current, ghost);
+        }
+        autosuggestInput.current += ghost;
+        autosuggestGhost.current = null;
+        return;
+      }
+
       if (idRef.current) {
         if (cb.current.onInputData) {
           cb.current.onInputData(data);
         } else {
           void writeSession(idRef.current, data);
         }
+      }
+
+      if (autosuggestEnabled.current) {
+        updateInputFromKeystrokes(data);
+        renderAutosuggest();
       }
     });
 
