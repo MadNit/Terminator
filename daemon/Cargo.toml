@@ -44,3 +44,8 @@ base64 = "0.22"
 # async-stream powers the `stream!` macro used to bridge a broadcast
 # Receiver to axum's Sse response.
 async-stream = "0.3"
+
+# parking_lot's Mutex is faster than std's under low contention
+# and never poisons -- important for a hot path (every PTY byte
+# takes the lock once on its way to the SSE client).
+parking_lot = "0.12"

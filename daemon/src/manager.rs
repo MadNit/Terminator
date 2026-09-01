@@ -11,6 +11,7 @@ use bytes::Bytes;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
+use crate::ringbuffer::OutputRingBuffer;
 use terminator_core::session::{Credentials, SessionManager};
 use terminator_core::transport::TransportSpec;
 
@@ -49,6 +50,12 @@ pub struct DaemonSessionManager {
     /// queue up indefinitely. The capacity is small: with 1 KB
     /// output chunks it buffers about 1 MB of recent scrollback.
     channels: Mutex<std::collections::HashMap<Uuid, broadcast::Sender<OutputEvent>>>,
+    /// Per-session scrollback buffer. When a new SSE subscriber
+    /// connects, the buffer is replayed first so the terminal
+    /// isn't blank after a UI restart. Lives alongside the
+    /// broadcast channel: the broadcast carries live events,
+    /// the ring buffer carries the last ~1 MB of history.
+    buffers: Mutex<std::collections::HashMap<Uuid, Arc<OutputRingBuffer>>>,
     /// Wall-clock time each session was opened, for `SessionInfo`.
     opened_at: Mutex<std::collections::HashMap<Uuid, i64>>,
 }
@@ -58,6 +65,7 @@ impl DaemonSessionManager {
         Self {
             core,
             channels: Mutex::new(std::collections::HashMap::new()),
+            buffers: Mutex::new(std::collections::HashMap::new()),
             opened_at: Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -85,7 +93,13 @@ impl DaemonSessionManager {
         // `on_output` and `on_exit` run on whatever task the core
         // uses to drain the transport, so we have to be Send+Sync.
         let tx_out = tx.clone();
+        let ringbuf = Arc::new(OutputRingBuffer::new());
+        let ringbuf_out = ringbuf.clone();
         let on_output: Arc<dyn Fn(Bytes) + Send + Sync> = Arc::new(move |data: Bytes| {
+            // Capture for reattach first: a slow SSE client
+            // shouldn't cause us to lose scrollback, so we
+            // record into the ring buffer before fanning out.
+            ringbuf_out.push(data.clone());
             let ev = OutputEvent::Output {
                 data: base64_encode(&data),
             };
@@ -111,6 +125,7 @@ impl DaemonSessionManager {
             .await?;
 
         self.channels.lock().await.insert(id, tx);
+        self.buffers.lock().await.insert(id, ringbuf);
         self.opened_at.lock().await.insert(id, now_ms());
 
         Ok((id, rx))
@@ -174,6 +189,17 @@ impl DaemonSessionManager {
             .get(&id)
             .ok_or_else(|| anyhow::anyhow!("unknown session {id}"))?;
         Ok(tx.subscribe())
+    }
+
+    /// Snapshot of the buffered output for reattach. Returns an
+    /// empty `Vec` for an unknown session id so the HTTP handler
+    /// can answer with 200 + `[]` rather than 404.
+    pub async fn scrollback(&self, id: Uuid) -> Vec<Bytes> {
+        let buffers = self.buffers.lock().await;
+        match buffers.get(&id) {
+            Some(buf) => buf.snapshot(),
+            None => Vec::new(),
+        }
     }
 
     pub async fn is_alive(&self, id: Uuid) -> bool {

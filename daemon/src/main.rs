@@ -23,6 +23,7 @@ use tracing_subscriber::EnvFilter;
 use terminator_core::session::SessionManager;
 
 mod manager;
+mod ringbuffer;
 mod server;
 
 use manager::DaemonSessionManager;

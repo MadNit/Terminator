@@ -102,6 +102,7 @@ pub fn router(manager: Arc<DaemonSessionManager>) -> Router {
         .route("/sessions", get(list_sessions).post(open_session))
         .route("/sessions/:id", get(get_session).delete(close_session))
         .route("/sessions/:id/output", get(session_output_sse))
+        .route("/sessions/:id/scrollback", get(session_scrollback))
         .route("/sessions/:id/input", post(write_session))
         .route("/sessions/:id/resize", post(resize_session))
         .with_state(state)
@@ -246,14 +247,58 @@ async fn session_output_sse(
         warn!(%id, "subscribe to unknown session");
         StatusCode::NOT_FOUND
     })?;
-    let stream = broadcast_to_sse(rx);
+    // Snapshot the scrollback buffer BEFORE the stream starts so
+    // the first thing the client sees is the most recent ~1 MB
+    // of output, not a blank terminal. The buffer only grows
+    // while the live broadcast is also running, so anything that
+    // arrives between the snapshot and the first recv() below
+    // is still in the broadcast (no gap).
+    let replay: Vec<OutputEvent> = state
+        .manager
+        .scrollback(id)
+        .await
+        .into_iter()
+        .map(|chunk| OutputEvent::Output {
+            data: base64_encode(&chunk),
+        })
+        .collect();
+    let stream = broadcast_to_sse(rx, replay);
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15))))
+}
+
+async fn session_scrollback(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let id = parse_id(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    // Same encoding the SSE replay uses: an array of base64
+    // chunks, in arrival order. Empty array for unknown sessions
+    // so a UI reattach can treat "no scrollback" and "session
+    // gone" as two distinct conditions.
+    let chunks: Vec<String> = state
+        .manager
+        .scrollback(id)
+        .await
+        .iter()
+        .map(|c| base64_encode(c))
+        .collect();
+    Ok(Json(serde_json::json!({ "chunks": chunks })))
 }
 
 fn broadcast_to_sse(
     mut rx: tokio::sync::broadcast::Receiver<OutputEvent>,
+    replay: Vec<OutputEvent>,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     async_stream::stream! {
+        // Drain the scrollback buffer first. These are the
+        // events the client "missed" while the UI was gone;
+        // yielding them in order gives the terminal a sensible
+        // view of "what was on screen" before live events take
+        // over.
+        for ev in replay {
+            let payload = serde_json::to_string(&ev).unwrap_or_default();
+            yield Ok(Event::default().data(payload));
+        }
         loop {
             match rx.recv().await {
                 Ok(ev) => {
@@ -290,6 +335,11 @@ fn base64_decode(s: &str) -> Result<Bytes> {
         .decode(s)
         .map(Bytes::from)
         .map_err(|e| anyhow::anyhow!("base64 decode: {e}"))
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 fn now_ms() -> i64 {
