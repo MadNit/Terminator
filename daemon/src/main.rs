@@ -3,6 +3,18 @@
 //! tabs and scrollback are still there next time the user opens the
 //! app. The Tauri app speaks plain HTTP to us.
 //!
+
+// `windows_subsystem = "windows"` strips the default console window
+// that Rust binaries otherwise allocate on Windows. Without this,
+// the Tauri host spawns a daemon and a separate `cmd.exe`-style
+// window pops up next to the app -- and if the user closes that
+// window (sensible thing to do, they think it's leftover noise),
+// the daemon process dies with it. Every shell, local or SSH, then
+// silently stops accepting input while still showing cached
+// scrollback. Stderr is still routed to a log file via
+// `daemon_client::spawn_daemon`, so the no-console build is not
+// lossy for diagnostics.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! Lifecycle: the daemon is spawned by the Tauri app on first launch
 //! (if the port-file doesn't already point at a running instance).
 //! It writes the listening port to `daemon.port` under the per-user
