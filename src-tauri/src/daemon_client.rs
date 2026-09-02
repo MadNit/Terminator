@@ -1,4 +1,4 @@
-//! HTTP client for `terminator-daemon`. Tauri commands call into this
+﻿//! HTTP client for `terminator-daemon`. Tauri commands call into this
 //! instead of touching `core::SessionManager` directly, so the daemon
 //! owns every PTY/SSH/RDP process and they survive a UI restart.
 //!
@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -1028,3 +1029,607 @@ pub async fn spawn_or_connect() -> Result<DaemonClient> {
     warn!("no terminator-daemon found; spawning a new one");
     spawn_daemon().await
 }
+
+// =========================================================================
+// Resilient wrapper
+// =========================================================================
+//
+// `DaemonClient` holds a `base_url` baked in at startup. If the
+// `terminator-daemon` process dies mid-session (SIGKILL, OOM, the
+// console window being closed before the `windows_subsystem = "windows"`
+// fix landed, ...) every Tauri command that talks to it gets a TCP
+// `connection refused` and the user's terminal stops accepting input.
+//
+// `ResilientDaemon` wraps a `DaemonClient` and treats that category of
+// error as a signal to respawn. On the first request failure the
+// `inner` `Arc<DaemonClient>` is replaced with one pointing at the
+// new daemon's port and the same call is retried once. Application
+// errors (HTTP 4xx/5xx with a real response body, JSON parse failures,
+// ...) are NOT retried -- they would either still fail against a fresh
+// daemon (e.g. `attach` for a session id the new daemon never knew
+// about) or be a real bug.
+//
+// The wrapper keeps the same method signatures as `DaemonClient`, so
+// `AppState` only has to switch the type -- the call sites in
+// `lib.rs` do not change.
+
+// Heuristic: is this error almost certainly a dead-daemon (TCP-level)
+// error rather than an application error? We retry on connection
+// refused, connection reset, DNS failures, and read/write timeouts --
+// i.e. everything `reqwest` itself flags as having failed before
+// getting a response. HTTP status codes (4xx/5xx) come back through
+// a different path that does not include `reqwest::Error::is_*`,
+// so a 404 from `attach` (session gone) is correctly *not* retried.
+fn is_conn_error(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
+            return e.is_connect() || e.is_timeout() || e.is_request();
+        }
+    }
+    false
+}
+
+/// Sugar over `is_conn_error` for the respawn wrapper -- the
+/// handlers hold the call result in a local `let result = ...;`
+/// before deciding whether to respawn, so this one-liner avoids
+/// `if let Err(e) = &result { is_conn_error(e) } else { false }`
+/// at every call site.
+fn result_is_conn<T>(result: &Result<T, anyhow::Error>) -> bool {
+    result.as_ref().err().is_some_and(is_conn_error)
+}
+
+pub struct ResilientDaemon {
+    inner: Arc<tokio::sync::RwLock<Arc<DaemonClient>>>,
+}
+
+impl ResilientDaemon {
+    pub fn new(client: Arc<DaemonClient>) -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::RwLock::new(client)),
+        }
+    }
+
+    /// Force a respawn right now. Used by the Tauri command that
+    /// wants to recover from a stale state, e.g. after a manual
+    /// "the daemon looks wedged" hotkey.
+    pub async fn respawn(&self) -> Result<()> {
+        let new = spawn_or_connect().await?;
+        *self.inner.write().await = Arc::new(new);
+        Ok(())
+    }
+
+    /// Cheap probe: returns true if the daemon currently responds to
+    /// `/health`. Used by the Tauri command exposed to the UI.
+    pub async fn is_alive(&self) -> bool {
+        let client = self.inner.read().await.clone();
+        let url = format!("{}/health", client.base_url);
+        matches!(
+            client.http.get(&url).send().await,
+            Ok(r) if r.status().is_success()
+        )
+    }
+}
+
+// Hand-written respawn wrappers, one per public method. A macro
+// was tempting but ran into a wall: methods take a mix of
+// `&Credentials`-style references and owned `Bytes`/`Vec<...>`,
+// and the retry path needs both. References can be used twice
+// for free (`Copy`); owned values have to be cloned for the
+// first call so the original is still in hand for the retry.
+// Picking either `$arg` or `$arg.clone()` in the macro body
+// broke one side or the other, so the wrappers are spelled out
+// explicitly here. The shape is identical for every method:
+//   1. Snapshot the current `DaemonClient`.
+//   2. Call the underlying method.
+//   3. On a connection-level error, respawn and retry once.
+//   4. On any other error (HTTP 4xx/5xx, JSON parse, ...), return
+//      the original error -- a fresh daemon would just see the
+//      same application-level failure.
+//
+// SSE-returning methods (`open`, `attach`, `rdp_open`,
+// `files_upload`, `files_download`) are wrapped in full. On
+// retry, the first HTTP call repeats (so a slow SSH handshake
+// gets another chance) and the SSE subscribe hits the *new*
+// daemon with the new session id. A respawned daemon has no
+// memory of the old session, so `attach` against a vanished
+// session id returns 404 -- which is the correct outcome.
+impl ResilientDaemon {
+    // -- session lifecycle --
+    pub async fn open(
+        &self,
+        spec: TransportSpec,
+        cols: u16,
+        rows: u16,
+        creds: &terminator_core::session::Credentials,
+    ) -> Result<(uuid::Uuid, SseStream<OutputEvent>)> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.open(spec.clone(), cols, rows, creds).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        warn!("open: conn error; respawning daemon");
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.open(spec, cols, rows, creds).await;
+        }
+        result
+    }
+
+    pub async fn write(&self, id: uuid::Uuid, data: Bytes) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.write(id, data.clone()).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        warn!("write: conn error; respawning daemon");
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.write(id, data).await;
+        }
+        result
+    }
+
+    pub async fn resize(&self, id: uuid::Uuid, cols: u16, rows: u16) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.resize(id, cols, rows).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        warn!("resize: conn error; respawning daemon");
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.resize(id, cols, rows).await;
+        }
+        result
+    }
+
+    pub async fn close(&self, id: uuid::Uuid) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.close(id).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        warn!("close: conn error; respawning daemon");
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.close(id).await;
+        }
+        result
+    }
+
+    pub async fn list_sessions(&self) -> Result<Value> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.list_sessions().await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        warn!("list_sessions: conn error; respawning daemon");
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.list_sessions().await;
+        }
+        result
+    }
+
+    pub async fn attach(&self, id: uuid::Uuid) -> Result<SseStream<OutputEvent>> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.attach(id).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        warn!("attach: conn error; respawning daemon");
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.attach(id).await;
+        }
+        result
+    }
+
+    // -- file browser + exec --
+    pub async fn files_home(&self, id: uuid::Uuid) -> Result<String> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_home(id).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_home(id).await;
+        }
+        result
+    }
+
+    pub async fn files_list(
+        &self,
+        id: uuid::Uuid,
+        path: &str,
+    ) -> Result<terminator_core::files::Listing> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_list(id, path).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_list(id, path).await;
+        }
+        result
+    }
+
+    pub async fn files_mkdir(&self, id: uuid::Uuid, path: &str) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_mkdir(id, path).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_mkdir(id, path).await;
+        }
+        result
+    }
+
+    pub async fn files_remove(&self, id: uuid::Uuid, path: &str, is_dir: bool) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_remove(id, path, is_dir).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_remove(id, path, is_dir).await;
+        }
+        result
+    }
+
+    pub async fn files_rename(&self, id: uuid::Uuid, from: &str, to: &str) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_rename(id, from, to).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_rename(id, from, to).await;
+        }
+        result
+    }
+
+    pub async fn files_read(&self, id: uuid::Uuid, path: &str, max_bytes: usize) -> Result<String> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_read(id, path, max_bytes).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_read(id, path, max_bytes).await;
+        }
+        result
+    }
+
+    pub async fn files_write(&self, id: uuid::Uuid, path: &str, content: &str) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_write(id, path, content).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_write(id, path, content).await;
+        }
+        result
+    }
+
+    pub async fn files_search(
+        &self,
+        id: uuid::Uuid,
+        path: &str,
+        options: &terminator_core::files::SearchOptions,
+    ) -> Result<Vec<terminator_core::files::FileSearchResult>> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_search(id, path, options).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_search(id, path, options).await;
+        }
+        result
+    }
+
+    pub async fn exec_command(
+        &self,
+        spec: &TransportSpec,
+        command: &str,
+        creds: &terminator_core::session::Credentials,
+        cwd: Option<&str>,
+    ) -> Result<terminator_core::session::ExecResult> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.exec_command(spec, command, creds, cwd).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.exec_command(spec, command, creds, cwd).await;
+        }
+        result
+    }
+
+    pub async fn files_upload(
+        &self,
+        id: uuid::Uuid,
+        local_path: &str,
+        remote: &str,
+    ) -> Result<SseStream<TransferEvent>> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_upload(id, local_path, remote).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_upload(id, local_path, remote).await;
+        }
+        result
+    }
+
+    pub async fn files_download(
+        &self,
+        id: uuid::Uuid,
+        remote: &str,
+        local_path: &str,
+    ) -> Result<SseStream<TransferEvent>> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.files_download(id, remote, local_path).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.files_download(id, remote, local_path).await;
+        }
+        result
+    }
+
+    // -- log file management --
+    pub async fn log_dir(&self) -> Result<String> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.log_dir().await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.log_dir().await;
+        }
+        result
+    }
+
+    pub async fn list_session_logs(&self) -> Result<Value> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.list_session_logs().await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.list_session_logs().await;
+        }
+        result
+    }
+
+    pub async fn delete_session_log(&self, dir_name: &str) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.delete_session_log(dir_name).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.delete_session_log(dir_name).await;
+        }
+        result
+    }
+
+    pub async fn read_log_file(&self, path: &str) -> Result<String> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.read_log_file(path).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.read_log_file(path).await;
+        }
+        result
+    }
+
+    pub async fn session_log_paths(&self, id: uuid::Uuid) -> Result<Value> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.session_log_paths(id).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.session_log_paths(id).await;
+        }
+        result
+    }
+
+    pub async fn search_sessions(
+        &self,
+        needle: &str,
+        case_sensitive: bool,
+        max_per_session: usize,
+    ) -> Result<Vec<Value>> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.search_sessions(needle, case_sensitive, max_per_session).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.search_sessions(needle, case_sensitive, max_per_session).await;
+        }
+        result
+    }
+
+    // -- RDP --
+    pub async fn rdp_open(
+        &self,
+        cfg: &terminator_core::rdp::RdpConfig,
+    ) -> Result<(uuid::Uuid, u16, u16, SseStream<terminator_core::rdp::RdpEvent>)> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.rdp_open(cfg).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.rdp_open(cfg).await;
+        }
+        result
+    }
+
+    pub async fn rdp_input(&self, id: uuid::Uuid, ops: Vec<terminator_core::rdp::RdpInput>) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.rdp_input(id, ops.clone()).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.rdp_input(id, ops).await;
+        }
+        result
+    }
+
+    pub async fn rdp_resize(&self, id: uuid::Uuid, width: u16, height: u16) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.rdp_resize(id, width, height).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.rdp_resize(id, width, height).await;
+        }
+        result
+    }
+
+    pub async fn rdp_close(&self, id: uuid::Uuid) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.rdp_close(id).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.rdp_close(id).await;
+        }
+        result
+    }
+
+    pub async fn rdp_local_clipboard(&self, id: uuid::Uuid, text: &str) -> Result<()> {
+        let result = {
+            let client = self.inner.read().await.clone();
+            client.rdp_local_clipboard(id, text).await
+        };
+        if !result_is_conn(&result) {
+            return result;
+        }
+        if let Ok(new) = spawn_or_connect().await {
+            *self.inner.write().await = Arc::new(new);
+            let client = self.inner.read().await.clone();
+            return client.rdp_local_clipboard(id, text).await;
+        }
+        result
+    }
+}
+
+
