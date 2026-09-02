@@ -138,6 +138,7 @@ pub fn discover_shells() -> Vec<ShellOption> {
 /// `which`-equivalent that doesn't pull in a crate. Returns the first hit on
 /// PATH or `None`. Skips bare `cmd`/`cmd.exe` because we always have that
 /// available and it would just clutter the picker.
+#[allow(dead_code)]
 fn which(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {

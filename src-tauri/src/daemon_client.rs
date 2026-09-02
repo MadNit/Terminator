@@ -861,7 +861,6 @@ pub async fn spawn_daemon() -> Result<DaemonClient> {
     // new session leader so it survives the parent's exit.
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
     cmd.spawn().with_context(|| format!("spawn {exe:?}"))?;

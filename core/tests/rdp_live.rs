@@ -132,7 +132,7 @@ async fn live_connect_receives_frames() {
 
     let (tx, mut rx) = mpsc::channel(8);
     let mgr = RdpManager::new();
-    let (id, w, h) = mgr.open(cfg, tx).await.expect("connect");
+    let (id, w, h, _action_tx) = mgr.open(cfg, tx).await.expect("connect");
     assert!(w > 0 && h > 0, "desktop size must be non-zero");
 
     // A freshly connected desktop always paints something (the logon screen at
@@ -194,7 +194,7 @@ async fn live_capture_to_raw() {
 
     let (tx, mut rx) = mpsc::channel(8);
     let mgr = RdpManager::new();
-    let (id, dw, dh) = mgr.open(cfg, tx).await.expect("connect");
+    let (id, dw, dh, _action_tx) = mgr.open(cfg, tx).await.expect("connect");
     w = dw;
     h = dh;
     eprintln!("desktop = {w}x{h}");
@@ -236,6 +236,7 @@ async fn live_capture_to_raw() {
             Ok(Some(RdpEvent::Resized { width, height })) => {
                 eprintln!("resized -> {width}x{height}");
             }
+            Ok(Some(RdpEvent::RemoteClipboard { .. })) => {}
             Ok(Some(RdpEvent::Disconnected { reason })) => panic!("disconnected: {reason}"),
             Ok(None) => break,
             Err(_) => break,
@@ -287,7 +288,7 @@ async fn live_keyboard_opens_start_menu() {
 
     let (tx, rx) = mpsc::channel(8);
     let mgr = RdpManager::new();
-    let (id, w, h) = mgr.open(cfg, tx).await.expect("connect");
+    let (id, w, h, _action_tx) = mgr.open(cfg, tx).await.expect("connect");
 
     let fb = Arc::new(Mutex::new(vec![0u8; usize::from(w) * usize::from(h) * 4]));
     let pump = spawn_compositor(rx, w, h, Arc::clone(&fb));
@@ -526,7 +527,7 @@ async fn live_mouse_move_lands_on_target() {
     };
     let (tx, rx) = mpsc::channel(8);
     let mgr = RdpManager::new();
-    let (id, w, h) = mgr.open(cfg, tx).await.expect("connect");
+    let (id, w, h, _action_tx) = mgr.open(cfg, tx).await.expect("connect");
 
     let fb = Arc::new(Mutex::new(vec![0u8; usize::from(w) * usize::from(h) * 4]));
     let pump = spawn_compositor(rx, w, h, Arc::clone(&fb));
@@ -586,7 +587,7 @@ async fn live_resize_reactivates_and_keeps_painting() {
     };
     let (tx, mut rx) = mpsc::channel(8);
     let mgr = RdpManager::new();
-    let (id, w0, h0) = mgr.open(cfg, tx).await.expect("connect");
+    let (id, w0, h0, _action_tx) = mgr.open(cfg, tx).await.expect("connect");
     eprintln!("initial desktop {w0}x{h0}");
 
     // Drain the initial paint so the frames we count later are genuinely post-resize.
@@ -620,6 +621,7 @@ async fn live_resize_reactivates_and_keeps_painting() {
             Ok(Some(RdpEvent::Disconnected { reason })) => {
                 panic!("session died during resize: {reason}")
             }
+            Ok(Some(RdpEvent::RemoteClipboard { .. })) => {}
             Ok(None) => break,
             Err(_) => break,
         }

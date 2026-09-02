@@ -20,6 +20,8 @@ src-tauri/target/
 
 # Tauri bundle output
 src-tauri/gen/schemas
+src-tauri/binaries/terminator-daemon-*
+!src-tauri/binaries/terminator-daemon-x86_64-pc-windows-msvc.exe
 
 # Signing keys and secrets. Committing any of these is unrecoverable:
 # rotate immediately if it happens.

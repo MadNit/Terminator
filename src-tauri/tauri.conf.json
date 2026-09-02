@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File C:/projects/Terminator/scripts/sync-daemon-sidecar.ps1 && npm run build",
+    "beforeBuildCommand": "node ../scripts/sync-daemon-sidecar.js && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
