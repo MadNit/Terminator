@@ -949,7 +949,28 @@ export function TerminalPane({
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }}>
-      <div ref={hostRef} className="term-host" />
+      <div
+        ref={hostRef}
+        className="term-host"
+        tabIndex={0}
+        // Capture focus on any pointer down inside the wrapper, not
+        // just clicks on the host div. Without this, clicking the
+        // host's padding, the drag-handle region, or the gap
+        // between rows leaves the wrapper focused instead of the
+        // xterm.js textarea -- and xterm.js does not receive
+        // keypresses when `document.activeElement` is the wrapper.
+        // Tauri 2 + WebView2 is especially prone to this because
+        // the OS-level focus transitions the webview's
+        // `activeElement` through intermediate elements.
+        onPointerDown={(e) => {
+          // Only react to left-clicks; right-click is reserved for
+          // the context menu handler further down.
+          if (e.button !== 0) return;
+          // Defer one tick so xterm.js's own pointerdown listener
+          // (which sets up the selection / cursor) runs first.
+          requestAnimationFrame(() => termRef.current?.focus());
+        }}
+      />
 
       {/* Terminal Dropzone Overlay */}
       {dropHover && (
