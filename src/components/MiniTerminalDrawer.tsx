@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
@@ -105,11 +104,6 @@ export function MiniTerminalDrawer({
     );
 
     term.open(hostRef.current);
-    try {
-      term.loadAddon(new WebglAddon());
-    } catch {
-      // Fall back to canvas
-    }
 
     const effectiveSpec: TransportSpec = spec || { kind: "local", shell: null, cwd: null };
 

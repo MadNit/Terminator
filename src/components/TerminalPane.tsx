@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
@@ -312,11 +311,6 @@ export function TerminalPane({
     window.addEventListener("terminator:appearance_changed", onAppearanceChange);
 
     term.open(hostRef.current);
-    try {
-      term.loadAddon(new WebglAddon());
-    } catch (e) {
-      logFrontend("warn", `WebGL renderer unavailable, using canvas: ${String(e)}`);
-    }
 
     // Register OSC 7 (current working directory) handler
     term.parser.registerOscHandler(7, (data) => {
@@ -701,7 +695,12 @@ export function TerminalPane({
       if (e.button === 1) e.preventDefault();
     };
 
+    const onClick = () => {
+      term.focus();
+    };
+
     const host = hostRef.current;
+    host.addEventListener("click", onClick);
     host.addEventListener("mousedown", onMouseDown);
     host.addEventListener("contextmenu", onContextMenu);
     host.addEventListener("auxclick", onAuxClick);
