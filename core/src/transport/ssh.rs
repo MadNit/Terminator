@@ -300,6 +300,7 @@ impl SshTransport {
         let session = Self::establish_session(spec, &creds, &known_hosts_path).await?;
         let session = Arc::new(session);
         let channel = session.channel_open_session().await?;
+        let channel_id = channel.id();
         channel
             .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
             .await
@@ -315,18 +316,10 @@ impl SshTransport {
         // Reads and writes run in *separate* tasks, and that separation is
         // load-bearing -- a single task serving both directions deadlocks.
         //
-        // The chain: russh delivers channel messages over a bounded mpsc
-        // (channel_buffer_size, 100 by default). Writing blocks once the SSH
-        // send window is exhausted, and the window is only replenished when
-        // russh's session loop processes a WindowAdjust from the server. If one
-        // task owns both directions, blocking on a write stops it draining
-        // `wait()`; the 100-slot buffer fills; russh's session loop blocks
-        // delivering into it; and a blocked session loop can never process the
-        // WindowAdjust that would unblock the write. Typing dies permanently
-        // while output keeps flowing.
-        //
-        // Splitting the channel gives each direction its own task, so the read
-        // side keeps draining no matter what the write side is doing.
+        // Splitting the channel gives the read side its own task to drain `wait()`,
+        // while the write side sends data directly through the session handle (`session.data`).
+        // Direct `session.data` avoids russh's internal `ChannelTx` Tokio Notify race
+        // condition where `WatchNotification` can lose window adjustment notifications.
         let (mut read_half, write_half) = channel.split();
 
         // Reader: drain the channel and forward output. Holds a reference to
@@ -357,23 +350,17 @@ impl SshTransport {
         });
 
         // Writer: keystrokes, resizes and shutdown.
-        let mut writer = write_half.make_writer();
+        let writer_session = session.clone();
         tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
                     Cmd::Data(b) => {
                         if b.is_empty() {
                             continue;
                         }
-                        if let Err(e) = writer.write_all(&b).await {
-                            tracing::error!("SSH writer write_all error: {e:?}");
-                            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                                break;
-                            }
-                        }
-                        if let Err(e) = writer.flush().await {
-                            tracing::warn!("SSH writer flush error: {e:?}");
+                        if let Err(_undelivered) = writer_session.data(channel_id, b).await {
+                            tracing::warn!("SSH writer session.data failed, channel closed");
+                            break;
                         }
                     }
                     Cmd::Resize { cols, rows } => {
