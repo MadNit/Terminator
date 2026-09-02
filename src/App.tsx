@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPane } from "./components/TerminalPane";
 import { Sidebar } from "./components/Sidebar";
 import { ConnectDialog, type NewConnection } from "./components/ConnectDialog";
@@ -7,20 +7,32 @@ import { PasswordPrompt } from "./components/PasswordPrompt";
 import { ProfileView } from "./components/ProfileView";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { AppHeader } from "./components/AppHeader";
-import { SessionHistoryModal } from "./components/SessionHistoryModal";
-import { TunnelManagerModal } from "./components/TunnelManagerModal";
-import { SnippetManagerModal } from "./components/SnippetManagerModal";
-import { KnownHostsModal } from "./components/KnownHostsModal";
-import { TriggerManagerModal } from "./components/TriggerManagerModal";
-import { BackupModal } from "./components/BackupModal";
-import { ThemeCustomizerModal } from "./components/ThemeCustomizerModal";
-import { ResourceMonitorModal } from "./components/ResourceMonitorModal";
-import { BatchRunnerModal } from "./components/BatchRunnerModal";
-import { CommandPalette } from "./components/CommandPalette";
-import { SearchPanel } from "./components/SearchPanel";
-import FileDrawer from "./components/FileDrawer";
-import { RdpPane } from "./components/RdpPane";
-import { RemoteEditorModal, type OpenFileTarget } from "./components/RemoteEditorModal";
+// The modals and drawers below are only opened from explicit UI actions
+// (command palette, header buttons, file-tree double-click, etc.) and
+// each one pulls in a sizeable dependency graph -- Monaco alone is
+// ~3 MB. Eager imports meant the main bundle hit Vite's 500 kB warning
+// and forced first paint to wait on every code-mirror / chart / RDP
+// / SSH-file-tree chunk even when the user never opened any of them.
+// `React.lazy` defers each chunk until the modal is actually mounted.
+const SessionHistoryModal = lazy(() => import("./components/SessionHistoryModal").then((m) => ({ default: m.SessionHistoryModal })));
+const TunnelManagerModal = lazy(() => import("./components/TunnelManagerModal").then((m) => ({ default: m.TunnelManagerModal })));
+const SnippetManagerModal = lazy(() => import("./components/SnippetManagerModal").then((m) => ({ default: m.SnippetManagerModal })));
+const KnownHostsModal = lazy(() => import("./components/KnownHostsModal").then((m) => ({ default: m.KnownHostsModal })));
+const TriggerManagerModal = lazy(() => import("./components/TriggerManagerModal").then((m) => ({ default: m.TriggerManagerModal })));
+const BackupModal = lazy(() => import("./components/BackupModal").then((m) => ({ default: m.BackupModal })));
+const ThemeCustomizerModal = lazy(() => import("./components/ThemeCustomizerModal").then((m) => ({ default: m.ThemeCustomizerModal })));
+const ResourceMonitorModal = lazy(() => import("./components/ResourceMonitorModal").then((m) => ({ default: m.ResourceMonitorModal })));
+const BatchRunnerModal = lazy(() => import("./components/BatchRunnerModal").then((m) => ({ default: m.BatchRunnerModal })));
+const CommandPalette = lazy(() => import("./components/CommandPalette").then((m) => ({ default: m.CommandPalette })));
+const SearchPanel = lazy(() => import("./components/SearchPanel").then((m) => ({ default: m.SearchPanel })));
+const FileDrawer = lazy(() => import("./components/FileDrawer"));
+const RdpPane = lazy(() => import("./components/RdpPane").then((m) => ({ default: m.RdpPane })));
+const RemoteEditorModal = lazy(() =>
+  import("./components/RemoteEditorModal").then((m) => ({ default: m.RemoteEditorModal })),
+);
+// Type-only import kept eager so the `OpenFileTarget` symbol is available
+// at compile time without paying the Monaco cost at runtime.
+import type { OpenFileTarget } from "./components/RemoteEditorModal";
 import { connectBlockedReason, describeTarget } from "./lib/transport";
 import {
   deleteProfile,
@@ -707,6 +719,7 @@ export default function App() {
                     style={{ display: t.key === active ? "block" : "none" }}
                   >
                     {t.spec.kind === "rdp" ? (
+                      <Suspense fallback={null}>
                       <RdpPane
                         key={t.gen}
                         spec={t.spec}
@@ -730,6 +743,7 @@ export default function App() {
                         onReconnect={() => reconnectTab(t.key)}
                         onClose={() => closeTab(t.key)}
                       />
+                      </Suspense>
                     ) : (
                       <TerminalPane
                         key={t.gen}
@@ -805,6 +819,7 @@ export default function App() {
                           </div>
                           <div className="pane-body">
                             {t.spec.kind === "rdp" ? (
+                              <Suspense fallback={null}>
                               <RdpPane
                                 key={t.gen}
                                 spec={t.spec}
@@ -828,6 +843,7 @@ export default function App() {
                                 onReconnect={() => reconnectTab(t.key)}
                                 onClose={() => closeTab(t.key)}
                               />
+                              </Suspense>
                             ) : (
                               <TerminalPane
                                 key={t.gen}
@@ -937,6 +953,7 @@ export default function App() {
           </div>
         </div>
 
+        <Suspense fallback={null}>
         <FileDrawer
           open={filesOpen}
           sessionId={activeTab?.sessionId ?? null}
@@ -963,6 +980,7 @@ export default function App() {
           }}
           onClose={() => setFilesOpen(false)}
         />
+        </Suspense>
       </div>
 
       <div className="statusbar">
@@ -1021,6 +1039,12 @@ export default function App() {
         />
       )}
 
+      {/* Single Suspense boundary for every lazy-loaded modal/drawer
+          below. Each is only opened from an explicit UI action, so the
+          fallback almost never paints -- but it has to exist because
+          React.lazy's chunks resolve asynchronously. The 0.001s
+          fallback is invisible at human timescales. */}
+      <Suspense fallback={null}>
       {historyOpen && (
         <SessionHistoryModal onClose={() => setHistoryOpen(false)} />
       )}
@@ -1277,6 +1301,7 @@ export default function App() {
           ]}
         />
       )}
+      </Suspense>
     </div>
   );
 }

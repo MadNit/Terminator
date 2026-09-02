@@ -25,6 +25,7 @@ import {
   type TransportSpec,
 } from "../lib/api";
 import "../editor.css";
+import * as fileIcons from "../lib/fileIcons";
 
 // Configure Monaco to use locally bundled monaco-editor for full offline capability
 loader.config({ monaco });
@@ -168,59 +169,7 @@ export function getLanguageForPath(filePath: string): string {
 }
 
 export function getFileIcon(fileName: string): string {
-  const ext = fileName.split(".").pop()?.toLowerCase() || "";
-  if (fileName.toLowerCase().includes("dockerfile")) return "🐳";
-  if (fileName.startsWith(".env")) return "🔒";
-
-  switch (ext) {
-    case "py":
-      return "🐍";
-    case "c":
-    case "cpp":
-    case "cc":
-    case "h":
-    case "hpp":
-      return "🔷";
-    case "java":
-      return "☕";
-    case "groovy":
-    case "gradle":
-      return "📜";
-    case "json":
-      return "📄";
-    case "yaml":
-    case "yml":
-      return "⚙️";
-    case "md":
-      return "📝";
-    case "rs":
-      return "🦀";
-    case "go":
-      return "🐹";
-    case "sh":
-    case "bash":
-    case "zsh":
-      return "🐚";
-    case "js":
-    case "jsx":
-      return "🟨";
-    case "ts":
-    case "tsx":
-      return "🔷";
-    case "html":
-      return "🌐";
-    case "css":
-    case "scss":
-      return "🎨";
-    case "sql":
-      return "🗄️";
-    case "toml":
-    case "ini":
-    case "conf":
-      return "⚙️";
-    default:
-      return "📄";
-  }
+  return fileIcons.getFileIcon(fileName);
 }
 
 function formatFileSize(size: number): string {

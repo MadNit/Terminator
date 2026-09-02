@@ -19,7 +19,7 @@ import {
   type Listing,
   type TransferEvent,
 } from "../lib/api";
-import { getFileIcon } from "./RemoteEditorModal";
+import { getFileIcon } from "../lib/fileIcons";
 
 /**
  * A remote file has to exist on this machine before the OS will drag it, so a
