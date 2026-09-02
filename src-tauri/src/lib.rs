@@ -772,24 +772,16 @@ async fn rdp_local_clipboard(
 // File browser
 // ---------------------------------------------------------------------------
 
-/// Progress for one transfer, streamed to the webview.
-///
-/// The webview side (TypeScript) expects all three variants because
-/// the upload/download commands used to emit them; now that those
-/// commands are stubbed while the daemon grows matching routes,
-/// only `Failed` is sent. The other two are kept on the wire so the
-/// frontend does not need a matching change when the routes land.
-#[derive(Clone, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[allow(dead_code)]
-enum TransferEvent {
-    #[serde(rename_all = "camelCase")]
-    Progress { transferred: u64, total: u64 },
-    #[serde(rename_all = "camelCase")]
-    Done { bytes: u64 },
-    #[serde(rename_all = "camelCase")]
-    Failed { message: String },
-}
+/// Per-byte progress for a file transfer, streamed to the
+/// webview. The daemon's `/files/upload` and
+/// `/files/download` SSE responses use the same shape; the
+/// `SseStream<TransferEvent>` parser in
+/// `daemon_client.rs` deserialises each `data:` payload
+/// into this enum, the Tauri command forwards it down the
+/// `Channel`, and the existing `Channel<TransferEvent>`
+/// parameter on `upload_file` / `download_file` carries
+/// it through to the webview.
+pub use daemon_client::TransferEvent;
 
 /// Where a local pane should start.
 #[tauri::command]
@@ -943,9 +935,9 @@ async fn remote_rename(
 /// The pre-daemon path ran `RemoteFs::upload` on the Tauri side, which only
 /// worked for local PTY sessions (the SFTP impl needs the SSH connection the
 /// daemon now owns). Routing the call through the daemon means a single
-/// round-trip HTTP POST: the daemon reads the local file (same machine) and
-/// streams it to the remote via SFTP. Per-byte progress events are not
-/// streamed yet -- the channel only sees the final `Done` or `Failed` event.
+/// round-trip HTTP POST whose response is a `text/event-stream`: the
+/// daemon reads the local file (same machine) and streams it to the
+/// remote via SFTP, pushing `Progress` events back through the SSE.
 #[tauri::command]
 async fn upload_file(
     state: State<'_, AppState>,
@@ -955,20 +947,39 @@ async fn upload_file(
     channel: Channel<TransferEvent>,
 ) -> Result<u64, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    match state.daemon.files_upload(id, &local, &remote).await {
-        Ok(bytes) => {
-            let _ = channel.send(TransferEvent::Done { bytes });
-            Ok(bytes)
-        }
-        Err(err) => {
-            let message = format!("{err:#}");
-            tracing::error!("upload failed: {message}");
-            let _ = channel.send(TransferEvent::Failed {
-                message: message.clone(),
-            });
-            Err(message)
+    let mut sse = state.daemon.files_upload(id, &local, &remote).await.map_err(|e| {
+        let message = format!("{e:#}");
+        let _ = channel.send(TransferEvent::Failed { message: message.clone() });
+        message
+    })?;
+    // Forward every event from the daemon's SSE stream to
+    // the webview's `Channel<TransferEvent>`. The handler
+    // exits when the daemon closes the stream (after
+    // `Done` or `Failed`).
+    use futures::StreamExt;
+    let mut total_bytes: u64 = 0;
+    while let Some(item) = sse.next().await {
+        match item {
+            Ok(TransferEvent::Done { bytes }) => {
+                total_bytes = bytes;
+                let _ = channel.send(TransferEvent::Done { bytes });
+                break;
+            }
+            Ok(ev) => {
+                if channel.send(ev.clone()).is_err() {
+                    // Webview gone; stop draining.
+                    break;
+                }
+            }
+            Err(err) => {
+                let message = format!("upload SSE stream error: {err:#}");
+                tracing::warn!("{message}");
+                let _ = channel.send(TransferEvent::Failed { message: message.clone() });
+                return Err(message);
+            }
         }
     }
+    Ok(total_bytes)
 }
 
 #[tauri::command]
@@ -1070,20 +1081,34 @@ async fn download_file(
     channel: Channel<TransferEvent>,
 ) -> Result<u64, String> {
     let id = Uuid::parse_str(&id).map_err(e)?;
-    match state.daemon.files_download(id, &remote, &local).await {
-        Ok(bytes) => {
-            let _ = channel.send(TransferEvent::Done { bytes });
-            Ok(bytes)
-        }
-        Err(err) => {
-            let message = format!("{err:#}");
-            tracing::error!("download failed: {message}");
-            let _ = channel.send(TransferEvent::Failed {
-                message: message.clone(),
-            });
-            Err(message)
+    let mut sse = state.daemon.files_download(id, &remote, &local).await.map_err(|e| {
+        let message = format!("{e:#}");
+        let _ = channel.send(TransferEvent::Failed { message: message.clone() });
+        message
+    })?;
+    use futures::StreamExt;
+    let mut total_bytes: u64 = 0;
+    while let Some(item) = sse.next().await {
+        match item {
+            Ok(TransferEvent::Done { bytes }) => {
+                total_bytes = bytes;
+                let _ = channel.send(TransferEvent::Done { bytes });
+                break;
+            }
+            Ok(ev) => {
+                if channel.send(ev.clone()).is_err() {
+                    break;
+                }
+            }
+            Err(err) => {
+                let message = format!("download SSE stream error: {err:#}");
+                tracing::warn!("{message}");
+                let _ = channel.send(TransferEvent::Failed { message: message.clone() });
+                return Err(message);
+            }
         }
     }
+    Ok(total_bytes)
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ use bytes::Bytes;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -582,28 +583,103 @@ struct FilesUploadBody {
     remote: String,
 }
 
-#[derive(serde::Serialize)]
-struct FilesUploadResponse {
-    bytes: u64,
+/// Wire format for per-byte file transfer progress. Same
+/// shape the Tauri Channel<TransferEvent> consumes, so
+/// `SseStream<TransferEvent>` on the Tauri side can pipe
+/// straight into the existing channel.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum TransferEvent {
+    /// Per-chunk update. `transferred` is the running
+    /// total in bytes; `total` is the expected final size
+    /// (0 if unknown, e.g. for a remote file whose size
+    /// wasn't reported).
+    Progress {
+        transferred: u64,
+        total: u64,
+    },
+    /// Transfer finished; `bytes` is the total written.
+    Done {
+        bytes: u64,
+    },
+    /// Transfer failed; `message` is the human-readable
+    /// error.
+    Failed {
+        message: String,
+    },
+}
+
+/// Build a `ProgressSink` that pushes `TransferEvent::Progress`
+/// onto the given mpsc sender.
+fn progress_sink(tx: mpsc::UnboundedSender<TransferEvent>) -> terminator_core::files::ProgressSink {
+    std::sync::Arc::new(move |p: terminator_core::files::Progress| {
+        let _ = tx.send(TransferEvent::Progress {
+            transferred: p.transferred,
+            total: p.total,
+        });
+    })
 }
 
 async fn files_upload(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<FilesUploadBody>,
-) -> Result<Json<FilesUploadResponse>, (StatusCode, String)> {
+) -> Result<
+    Sse<impl Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, String),
+> {
     let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
     let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
     let local = std::path::PathBuf::from(&body.local_path);
-    // `RemoteFs::upload` does its own chunked read; for v1 we
-    // pass a no-op progress sink. Per-byte progress over HTTP
-    // is a separate change.
-    let sink: terminator_core::files::ProgressSink = std::sync::Arc::new(|_| {});
-    let bytes = fs
-        .upload(&local, &body.remote, sink)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    Ok(Json(FilesUploadResponse { bytes }))
+    // Best-effort: peek the local file size so the UI can
+    // show a 0% -> 100% progress bar from the first event.
+    // Failure is non-fatal: the sink just won't know the
+    // total until chunks start arriving.
+    let initial_total = std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0);
+    let (tx, mut rx) = mpsc::unbounded_channel::<TransferEvent>();
+    if initial_total > 0 {
+        let _ = tx.send(TransferEvent::Progress {
+            transferred: 0,
+            total: initial_total,
+        });
+    }
+    let sink = progress_sink(tx.clone());
+    // Run the upload in the background so the SSE
+    // response can start streaming immediately. We use
+    // a JoinHandle to send the final Done / Failed event
+    // after the upload completes.
+    let upload = tokio::spawn(async move {
+        match fs.upload(&local, &body.remote, sink).await {
+            Ok(bytes) => {
+                let _ = tx.send(TransferEvent::Done { bytes });
+            }
+            Err(e) => {
+                let _ = tx.send(TransferEvent::Failed {
+                    message: format!("{e:#}"),
+                });
+            }
+        }
+    });
+    // Bridge the channel into an SSE stream. The handler
+    // returns when the upload task drops the sender (i.e.
+    // after the final Done / Failed event).
+    let stream = async_stream::stream! {
+        // We don't use a `drop(_upload)` guard here: the
+        // upload task holds its own clone of `tx`, and we
+        // drain `rx` until the sender closes (which happens
+        // when the task and the bridge both drop). The
+        // `_upload` binding keeps the JoinHandle alive so
+        // the runtime doesn't drop a still-running task.
+        let _upload = upload;
+        while let Some(ev) = rx.recv().await {
+            let payload = serde_json::to_string(&ev).unwrap_or_default();
+            yield Ok(Event::default().data(payload));
+            if matches!(ev, TransferEvent::Done { .. } | TransferEvent::Failed { .. }) {
+                break;
+            }
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15))))
 }
 
 #[derive(serde::Deserialize)]
@@ -616,16 +692,38 @@ async fn files_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<FilesDownloadBody>,
-) -> Result<Json<FilesUploadResponse>, (StatusCode, String)> {
+) -> Result<
+    Sse<impl Stream<Item = Result<Event, Infallible>>>,
+    (StatusCode, String),
+> {
     let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
     let fs = state.manager.files(id).await.map_err(|e| file_status_for(&e))?;
     let local = std::path::PathBuf::from(&body.local_path);
-    let sink: terminator_core::files::ProgressSink = std::sync::Arc::new(|_| {});
-    let bytes = fs
-        .download(&body.remote, &local, sink)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-    Ok(Json(FilesUploadResponse { bytes }))
+    let (tx, mut rx) = mpsc::unbounded_channel::<TransferEvent>();
+    let sink = progress_sink(tx.clone());
+    let download = tokio::spawn(async move {
+        match fs.download(&body.remote, &local, sink).await {
+            Ok(bytes) => {
+                let _ = tx.send(TransferEvent::Done { bytes });
+            }
+            Err(e) => {
+                let _ = tx.send(TransferEvent::Failed {
+                    message: format!("{e:#}"),
+                });
+            }
+        }
+    });
+    let stream = async_stream::stream! {
+        let _download = download;
+        while let Some(ev) = rx.recv().await {
+            let payload = serde_json::to_string(&ev).unwrap_or_default();
+            yield Ok(Event::default().data(payload));
+            if matches!(ev, TransferEvent::Done { .. } | TransferEvent::Failed { .. }) {
+                break;
+            }
+        }
+    };
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15))))
 }
 
 #[derive(serde::Deserialize)]

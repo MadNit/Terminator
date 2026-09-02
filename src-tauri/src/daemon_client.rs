@@ -21,6 +21,35 @@ use terminator_core::files::Listing;
 use terminator_core::session::Credentials;
 use terminator_core::transport::TransportSpec;
 
+/// Per-byte progress for a file transfer, streamed from the
+/// daemon's `/files/upload` and `/files/download` SSE
+/// responses. Mirrors `core::TransferEvent` and the
+/// `Channel<TransferEvent>` on the lib.rs side; the SSE
+/// parser just deserialises each `data:` payload into
+/// this enum and the Tauri command forwards it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum TransferEvent {
+    /// Per-chunk update. `transferred` is the running total
+    /// in bytes; `total` is the expected final size (0 if
+    /// the source size wasn't known up front, e.g. some
+    /// remote endpoints don't report it before the body
+    /// starts).
+    Progress {
+        transferred: u64,
+        total: u64,
+    },
+    /// Transfer finished; `bytes` is the total written.
+    Done {
+        bytes: u64,
+    },
+    /// Transfer failed; `message` is the human-readable
+    /// error suitable for surfacing in the UI.
+    Failed {
+        message: String,
+    },
+}
+
 /// Wire shape of the daemon's `OutputEvent` enum. Kept identical to
 /// the daemon's `OutputEvent` in `daemon/src/manager.rs` -- the two
 /// crates can't share the type (one is a lib, one a bin), so this
@@ -330,16 +359,20 @@ impl DaemonClient {
     //
     // The daemon owns the SSH connection, so the local file on the
     // Tauri side is read by the daemon (they are on the same
-    // machine, sharing the user data dir). Progress is not
-    // streamed yet -- the Tauri command sends a single `Done`
-    // event on the channel with the total bytes.
+    // machine, sharing the user data dir).
+    //
+    // Both upload and download now stream progress over
+    // SSE (the daemon's response body is a
+    // `text/event-stream`). The Tauri command consumes
+    // the stream and pushes `Progress` / `Done` /
+    // `Failed` events to its `Channel<TransferEvent>`.
 
     pub async fn files_upload(
         &self,
         id: Uuid,
         local_path: &str,
         remote: &str,
-    ) -> Result<u64> {
+    ) -> Result<SseStream<TransferEvent>> {
         let url = format!("{}/sessions/{}/files/upload", self.base_url, id);
         let body = serde_json::json!({
             "local_path": local_path,
@@ -353,9 +386,7 @@ impl DaemonClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(http_err(status, body, &url));
         }
-        let parsed: FilesTransferResponse = resp.json().await
-            .context("parse files_upload body")?;
-        Ok(parsed.bytes)
+        Ok(SseStream::<TransferEvent>::new(resp))
     }
 
     pub async fn files_download(
@@ -363,7 +394,7 @@ impl DaemonClient {
         id: Uuid,
         remote: &str,
         local_path: &str,
-    ) -> Result<u64> {
+    ) -> Result<SseStream<TransferEvent>> {
         let url = format!("{}/sessions/{}/files/download", self.base_url, id);
         let body = serde_json::json!({
             "remote": remote,
@@ -377,9 +408,7 @@ impl DaemonClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(http_err(status, body, &url));
         }
-        let parsed: FilesTransferResponse = resp.json().await
-            .context("parse files_download body")?;
-        Ok(parsed.bytes)
+        Ok(SseStream::<TransferEvent>::new(resp))
     }
 
     pub async fn files_search(
@@ -647,15 +676,6 @@ fn http_err(status: reqwest::StatusCode, body: String, url: &str) -> anyhow::Err
 #[derive(Debug, Deserialize)]
 struct OpenResponse {
     id: String,
-}
-
-/// Wire shape for `POST /sessions/{id}/files/upload` and
-/// `POST /sessions/{id}/files/download`. The daemon returns the
-/// number of bytes transferred so the Tauri command can emit a
-/// `Done` event on its progress channel.
-#[derive(Debug, Deserialize)]
-struct FilesTransferResponse {
-    bytes: u64,
 }
 
 /// Wire shape for `POST /rdp`. Matches the daemon's
