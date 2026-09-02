@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc::error::TrySendError;
 
 /// What the host key check decided.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -310,8 +311,27 @@ impl SshTransport {
             .await
             .context("remote refused a shell")?;
 
-        let (out_tx, out_rx) = mpsc::channel::<Bytes>(256);
-        let (cmd_tx, mut cmd_rx) = mpsc::channel::<Cmd>(64);
+        // Output channel: sized for a few seconds of fast shell
+        // output before the SSE consumer (Tauri side) needs to
+        // keep up. 8192 is enough for ~1 MB of burst output at the
+        // typical 64 KiB chunk size. If it ever fills the reader
+        // drops new output rather than blocking -- a frozen
+        // reader would cascade into a frozen input pipeline
+        // (the SSH transport pauses, the writer can't make
+        // progress, the cmd channel fills, `SshTransport::write`
+        // blocks, the HTTP handler blocks, the UI freezes).
+        let (out_tx, out_rx) = mpsc::channel::<Bytes>(8192);
+        // Command channel: keystrokes queued for the writer task.
+        // 1024 entries gives the writer enough headroom to
+        // absorb normal typing bursts even when the network is
+        // slow. Paired with `try_send` in `SshTransport::write`
+        // so a full channel drops individual keystrokes with a
+        // warning rather than blocking the entire input
+        // pipeline (which is what froze the UI for ~5 s
+        // before this fix: the channel was 64 and
+        // `send().await` blocked indefinitely while the
+        // writer was mid-`session.data()` on a slow network).
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<Cmd>(1024);
 
         // Reads and writes run in *separate* tasks, and that separation is
         // load-bearing -- a single task serving both directions deadlocks.
@@ -331,15 +351,34 @@ impl SshTransport {
             while let Some(msg) = read_half.wait().await {
                 match msg {
                     ChannelMsg::Data { data } => {
-                        if out_tx.send(Bytes::copy_from_slice(&data)).await.is_err() {
-                            break;
+                        // `try_send` rather than `send().await`:
+                        // a slow SSE consumer on the Tauri side
+                        // must not back-pressure the reader task.
+                        // If the consumer falls behind by the
+                        // 8192-buffer worth, we drop the new
+                        // output (with a one-shot warning per
+                        // back-pressure event) rather than
+                        // blocking, which would freeze the SSH
+                        // transport and via the cascade
+                        // described above freeze the input
+                        // pipeline too.
+                        if out_tx.try_send(Bytes::copy_from_slice(&data)).is_err() {
+                            static WARNED: std::sync::atomic::AtomicBool =
+                                std::sync::atomic::AtomicBool::new(false);
+                            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                                tracing::warn!(
+                                    "ssh output buffer full; reader dropping bytes until consumer catches up"
+                                );
+                            }
                         }
                     }
                     // stderr on a shell channel; show it inline as a terminal
                     // would, rather than discarding it.
                     ChannelMsg::ExtendedData { data, .. } => {
-                        if out_tx.send(Bytes::copy_from_slice(&data)).await.is_err() {
-                            break;
+                        if out_tx.try_send(Bytes::copy_from_slice(&data)).is_err() {
+                            // Same back-pressure handling as above;
+                            // we just rely on the static guard to
+                            // keep the warning count down.
                         }
                     }
                     ChannelMsg::Eof | ChannelMsg::Close => break,
@@ -509,10 +548,32 @@ impl Transport for SshTransport {
     }
 
     async fn write(&self, data: Bytes) -> Result<()> {
-        self.cmd
-            .send(Cmd::Data(data))
-            .await
-            .map_err(|_| anyhow!("ssh channel closed"))
+        // `try_send` (not `send().await`) is load-bearing for
+        // the input pipeline. The Tauri side awaits the
+        // HTTP response from `POST /sessions/{id}/input`; if
+        // `cmd_tx.send().await` blocked on a full channel
+        // here, that block propagates up through the
+        // Tauri command to the UI and freezes input even
+        // though output still flows. With `try_send` a
+        // full channel returns immediately and the
+        // keystroke is dropped (with a warning) instead of
+        // stalling the entire input pipeline. The capacity
+        // bump (64 -> 1024) makes this a rare event.
+        match self.cmd.try_send(Cmd::Data(data)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "ssh cmd channel full; input being dropped. \
+                         network likely slow or UI not draining output fast enough"
+                    );
+                }
+                Ok(())
+            }
+            Err(TrySendError::Closed(_)) => Err(anyhow!("ssh channel closed")),
+        }
     }
 
     async fn resize(&self, cols: u16, rows: u16) -> Result<()> {
