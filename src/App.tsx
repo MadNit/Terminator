@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPane } from "./components/TerminalPane";
 import { Sidebar } from "./components/Sidebar";
 import { ConnectDialog, type NewConnection } from "./components/ConnectDialog";
@@ -17,6 +17,7 @@ import { ThemeCustomizerModal } from "./components/ThemeCustomizerModal";
 import { ResourceMonitorModal } from "./components/ResourceMonitorModal";
 import { BatchRunnerModal } from "./components/BatchRunnerModal";
 import { CommandPalette } from "./components/CommandPalette";
+import { SearchPanel } from "./components/SearchPanel";
 import FileDrawer from "./components/FileDrawer";
 import { RdpPane } from "./components/RdpPane";
 import { RemoteEditorModal, type OpenFileTarget } from "./components/RemoteEditorModal";
@@ -25,6 +26,8 @@ import {
   deleteProfile,
   deleteSecret,
   listSessions,
+  searchSessions,
+  type SearchResult,
   renameSecret,
   updateProfile,
   listProfiles,
@@ -142,6 +145,14 @@ export default function App() {
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  // Stable ref to the search wrapper so the SearchPanel's
+  // debounce timer can call the latest closure without
+  // re-running on every render.
+  const searchRunRef = useRef<
+    ((q: string, cs: boolean, mps: number) => Promise<{ results: SearchResult[] }>) | null
+  >(null);
+  searchRunRef.current = searchSessions;
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorInitialFile, setEditorInitialFile] = useState<OpenFileTarget | null>(null);
   const [filesOpen, setFilesOpen] = useState(
@@ -162,12 +173,20 @@ export default function App() {
     localStorage.setItem("filesOpen", filesOpen ? "1" : "0");
   }, [filesOpen]);
 
-  // Global Keyboard Shortcuts (Cmd/Ctrl+B, Cmd/Ctrl+J, Cmd/Ctrl+K, Cmd/Ctrl+P, Cmd/Ctrl+E)
+  // Global Keyboard Shortcuts (Cmd/Ctrl+B, Cmd/Ctrl+J, Cmd/Ctrl+K, Cmd/Ctrl+P, Cmd/Ctrl+E, Cmd/Ctrl+Shift+F)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         setPaletteOpen((v) => !v);
+      }
+      if (
+        e.key.toLowerCase() === "f" &&
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey
+      ) {
+        e.preventDefault();
+        setSearchOpen((v) => !v);
       }
       if (e.key.toLowerCase() === "e" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
@@ -1083,12 +1102,39 @@ export default function App() {
         }}
       />
 
+      {searchOpen && (
+        <SearchPanel
+          onClose={() => setSearchOpen(false)}
+          onJumpToSession={(sessionId) => {
+            // Find the tab whose sessionId matches and make
+            // it active. If the user searched a session
+            // they don't have open as a tab (e.g. they
+            // closed it), this is a no-op; the user can
+            // reattach from the prompt at app start.
+            const idx = tabs.findIndex((t) => t.sessionId === sessionId);
+            if (idx >= 0) setActive(idx);
+          }}
+          runRef={searchRunRef}
+        />
+      )}
+
       {paletteOpen && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
           onConnectProfile={(p) => void openProfile(p)}
           onRunSnippet={(cmd) => runCommandInActiveTerminal(cmd)}
           actions={[
+            {
+              id: "find-cross-tab",
+              title: "Find in any open tab…",
+              subtitle: "Search scrollback across every session (Ctrl+Shift+F)",
+              shortcut: "Ctrl+Shift+F",
+              icon: "🔎",
+              perform: () => {
+                setPaletteOpen(false);
+                setSearchOpen(true);
+              },
+            },
             {
               id: "open-editor",
               title: "Open Remote Mini-IDE Code Editor",

@@ -95,6 +95,37 @@ export type DaemonSession = {
  *  app start to decide whether to show the "Reattach?" prompt. */
 export const listSessions = () => invoke<DaemonSession[]>("list_sessions");
 
+/** One line of cross-session search output. `line_number` is
+ *  1-based within the joined output for the session. */
+export type SearchHit = {
+  lineNumber: number;
+  text: string;
+};
+
+/** Per-session contribution to a cross-session search. The
+ *  `session_id` is a UUID string; join it with `listSessions()`
+ *  to get the spec / host / user for display. */
+export type SearchResult = {
+  sessionId: string;
+  hits: SearchHit[];
+};
+
+/** Walk every live session's scrollback ring buffer and
+ *  return the lines that contain `query`. Text only; no regex
+ *  for v1. `caseSensitive` defaults to false. `maxPerSession`
+ *  defaults to 50 (the daemon clamps to 1..=500). Empty
+ *  queries return an empty list. */
+export const searchSessions = (
+  query: string,
+  caseSensitive = false,
+  maxPerSession = 50,
+) =>
+  invoke<{ results: SearchResult[] }>("search_sessions", {
+    query,
+    caseSensitive,
+    maxPerSession,
+  });
+
 /** Reattach to a session the daemon is already hosting. Returns
  *  a session id (UUID string); output and exit events flow
  *  through `onEvent` exactly like `openSession`. The daemon
