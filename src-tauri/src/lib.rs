@@ -1030,6 +1030,30 @@ async fn search_local_dir(
     .map_err(e)
 }
 
+/// Cross-session search. Walks every live session's
+/// scrollback ring buffer and returns matching lines. The
+/// webview groups by session id and shows them in the
+/// command palette / find panel.
+#[tauri::command]
+async fn search_sessions(
+    state: State<'_, AppState>,
+    query: String,
+    case_sensitive: Option<bool>,
+    max_per_session: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    if query.is_empty() {
+        return Ok(serde_json::json!({ "results": [] }));
+    }
+    let case_sensitive = case_sensitive.unwrap_or(false);
+    let max_per_session = max_per_session.unwrap_or(50);
+    let results = state
+        .daemon
+        .search_sessions(&query, case_sensitive, max_per_session)
+        .await
+        .map_err(e)?;
+    Ok(serde_json::json!({ "results": results }))
+}
+
 /// Remote -> local.
 #[tauri::command]
 async fn download_file(
@@ -1399,6 +1423,7 @@ pub fn run() {
             write_local_text_file,
             search_remote_dir,
             search_local_dir,
+            search_sessions,
             exec_command,
             batch_exec,
             log_frontend,

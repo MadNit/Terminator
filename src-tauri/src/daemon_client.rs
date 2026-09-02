@@ -470,6 +470,38 @@ impl DaemonClient {
         resp.json().await.context("parse session_log_paths body")
     }
 
+    /// Cross-session search. Walks every live session's
+    /// scrollback ring buffer and returns the lines that
+    /// contain `needle`. The webview groups the results by
+    /// session id and shows them in the command palette.
+    pub async fn search_sessions(
+        &self,
+        needle: &str,
+        case_sensitive: bool,
+        max_per_session: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        let url = format!("{}/search", self.base_url);
+        let case_str = if case_sensitive { "true" } else { "false" };
+        let max_str = max_per_session.to_string();
+        let resp = self
+            .http
+            .get(&url)
+            .query(&[
+                ("q", needle),
+                ("case_sensitive", case_str),
+                ("max_per_session", max_str.as_str()),
+            ])
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_err(status, body, &url));
+        }
+        resp.json().await.context("parse search body")
+    }
+
     // -- RDP ---------------------------------------------------------
     //
     // The daemon owns every RDP session, so the Tauri side is

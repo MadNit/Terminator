@@ -120,6 +120,11 @@ pub fn router(
         .route("/sessions/:id", get(get_session).delete(close_session))
         .route("/sessions/:id/output", get(session_output_sse))
         .route("/sessions/:id/scrollback", get(session_scrollback))
+        // Global search across every live session's ring
+        // buffer. The query string carries the needle and
+        // options; the response is a flat list of
+        // `(session_id, hit)` pairs.
+        .route("/search", get(search_sessions))
         .route("/sessions/:id/input", post(write_session))
         .route("/sessions/:id/resize", post(resize_session))
         // File browser + one-shot exec. These complete the
@@ -328,6 +333,44 @@ async fn session_scrollback(
         .map(|c| base64_encode(c))
         .collect();
     Ok(Json(serde_json::json!({ "chunks": chunks })))
+}
+
+#[derive(serde::Deserialize)]
+struct SearchQuery {
+    /// Search needle. Empty -> 400; longer than 1024 ->
+    /// 400 (the ring buffer is 1 MB; 1024 chars is plenty).
+    q: String,
+    /// Default `false`. Set to "1" / "true" for case-
+    /// sensitive matching.
+    #[serde(default)]
+    case_sensitive: bool,
+    /// Cap on matches per session. Default 50; clamp to
+    /// 1..=500. A 1 MB buffer can have thousands of
+    /// matches for a common word.
+    #[serde(default = "default_search_max_per_session")]
+    max_per_session: usize,
+}
+
+fn default_search_max_per_session() -> usize {
+    50
+}
+
+async fn search_sessions(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<SearchQuery>,
+) -> Result<Json<Vec<crate::manager::SearchResult>>, (StatusCode, String)> {
+    if q.q.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "q is required".into()));
+    }
+    if q.q.len() > 1024 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "q is longer than 1024 chars".into(),
+        ));
+    }
+    let max = q.max_per_session.clamp(1, 500);
+    let results = state.manager.search(&q.q, q.case_sensitive, max).await;
+    Ok(Json(results))
 }
 
 fn broadcast_to_sse(

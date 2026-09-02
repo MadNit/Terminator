@@ -44,6 +44,16 @@ pub struct SessionInfo {
     pub opened_at_ms: i64,
 }
 
+/// One session's contribution to a global search.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchResult {
+    pub session_id: String,
+    /// Line-level hits inside the session's ring buffer,
+    /// capped at `max_per_session`. Empty sessions are not
+    /// included in the response.
+    pub hits: Vec<crate::ringbuffer::SearchHit>,
+}
+
 pub struct DaemonSessionManager {
     core: Arc<SessionManager>,
     /// Per-session broadcast channel that the SSE handler subscribes
@@ -318,6 +328,51 @@ impl DaemonSessionManager {
             Some(buf) => buf.snapshot(),
             None => Vec::new(),
         }
+    }
+
+    /// Search every live session's scrollback ring buffer for
+    /// `needle`. Returns a flat list of `(session_id, hit)`
+    /// pairs. The UI panel rebuilds the tree from the
+    /// session ids.
+    ///
+    /// `max_per_session` caps how many matches each session
+    /// contributes -- the ring buffer is 1 MB by default
+    /// and a long-running session can have thousands of
+    /// matches for a common word.
+    pub async fn search(
+        &self,
+        needle: &str,
+        case_sensitive: bool,
+        max_per_session: usize,
+    ) -> Vec<SearchResult> {
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let buffers = self.buffers.lock().await;
+        // Snapshot (session_id, SessionInfo, hit) for
+        // every session that has a ring buffer. Live
+        // filter: `is_alive` would be more accurate but
+        // requires another lock; the buffer lookup is
+        // already a strong signal of liveness.
+        let mut out = Vec::new();
+        for (id, buf) in buffers.iter() {
+            let hits = buf.search(needle, case_sensitive, max_per_session);
+            if hits.is_empty() {
+                continue;
+            }
+            // Pull the spec from the live core session so
+            // the UI can show the tab name (host/user).
+            // The core::SessionManager doesn't expose
+            // `list_sessions` cheaply; for v1 we put a
+            // placeholder spec and let the UI enrich from
+            // its own list. This avoids blocking on a
+            // second core lock from the search path.
+            out.push(SearchResult {
+                session_id: id.to_string(),
+                hits,
+            });
+        }
+        out
     }
 
     pub async fn is_alive(&self, id: Uuid) -> bool {

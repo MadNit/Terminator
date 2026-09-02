@@ -101,10 +101,155 @@ impl OutputRingBuffer {
     pub fn len(&self) -> usize {
         self.inner.lock().total_bytes
     }
+
+    /// Walk the buffer and return each line that contains
+    /// `needle`. Decodes each chunk as UTF-8 lossy; a match
+    /// that straddles a chunk boundary is still found
+    /// because we concatenate the chunks verbatim before
+    /// splitting on `\n` (a chunk that already ends in
+    /// `\n` does not gain an extra one).
+    ///
+    /// `max_results` caps the total number of matches; an
+    /// `OutputRingBuffer` may have been holding output for
+    /// hours, and the caller is a UI search panel.
+    ///
+    /// The returned `Vec` is in arrival order. Each entry
+    /// includes the matched line text and the 1-based
+    /// line number (within the joined output).
+    pub fn search(
+        &self,
+        needle: &str,
+        case_sensitive: bool,
+        max_results: usize,
+    ) -> Vec<SearchHit> {
+        // Concatenate chunks verbatim. We do NOT insert a
+        // separator between chunks -- a chunk that ends in
+        // `\n` already provides one, and inserting another
+        // would manufacture phantom empty lines that throw
+        // off the line numbers. The trade-off: a chunk
+        // that does NOT end in `\n` will appear as a
+        // continuation of the next chunk's first line.
+        // For a PTY ring buffer (always chunked on
+        // natural write boundaries) this is fine.
+        let joined = {
+            let inner = self.inner.lock();
+            let mut s = String::new();
+            for chunk in inner.chunks.iter() {
+                s.push_str(&String::from_utf8_lossy(chunk));
+            }
+            s
+        };
+        let needle_norm: String = if case_sensitive {
+            needle.to_string()
+        } else {
+            needle.to_lowercase()
+        };
+        let mut hits = Vec::new();
+        for (idx, raw_line) in joined.split('\n').enumerate() {
+            if hits.len() >= max_results {
+                break;
+            }
+            let line = if case_sensitive {
+                raw_line.to_string()
+            } else {
+                raw_line.to_lowercase()
+            };
+            if line.contains(&needle_norm) {
+                hits.push(SearchHit {
+                    line_number: idx + 1,
+                    text: raw_line.to_string(),
+                });
+            }
+        }
+        hits
+    }
+}
+
+/// One matching line in `OutputRingBuffer::search`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchHit {
+    /// 1-based line number within the joined output.
+    pub line_number: usize,
+    /// The line text (decoded as UTF-8 lossy; the matched
+    /// substring is the original case, since we only
+    /// lowercased a copy for comparison).
+    pub text: String,
 }
 
 impl Default for OutputRingBuffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push_str(buf: &OutputRingBuffer, s: &str) {
+        buf.push(bytes::Bytes::from(s.as_bytes().to_vec()));
+    }
+
+    #[test]
+    fn search_finds_substring_in_lines() {
+        let buf = OutputRingBuffer::new();
+        push_str(&buf, "first line\n");
+        push_str(&buf, "second line with NEEDLE here\n");
+        push_str(&buf, "third line\n");
+        let hits = buf.search("NEEDLE", false, 100);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line_number, 2);
+        assert!(hits[0].text.contains("NEEDLE"));
+    }
+
+    #[test]
+    fn search_is_case_insensitive_by_default() {
+        let buf = OutputRingBuffer::new();
+        push_str(&buf, "Foo bar baz\n");
+        push_str(&buf, "BAZ qux\n");
+        let hits = buf.search("baz", false, 100);
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn search_respects_case_sensitive_flag() {
+        let buf = OutputRingBuffer::new();
+        push_str(&buf, "Foo bar\n");
+        push_str(&buf, "BAZ qux\n");
+        // case-sensitive: "Foo" should NOT match "foo"
+        let hits = buf.search("foo", true, 100);
+        assert!(hits.is_empty());
+        // case-sensitive: "BAZ" should match
+        let hits = buf.search("BAZ", true, 100);
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn search_caps_at_max_results() {
+        let buf = OutputRingBuffer::new();
+        for i in 0..100 {
+            push_str(&buf, &format!("line {} with NEEDLE here\n", i));
+        }
+        let hits = buf.search("NEEDLE", false, 5);
+        assert_eq!(hits.len(), 5);
+        assert_eq!(hits[0].line_number, 1);
+        assert_eq!(hits[4].line_number, 5);
+    }
+
+    #[test]
+    fn search_returns_empty_when_no_match() {
+        let buf = OutputRingBuffer::new();
+        push_str(&buf, "hello world\n");
+        assert!(buf.search("NEEDLE", false, 100).is_empty());
+    }
+
+    #[test]
+    fn search_finds_match_across_chunk_boundary() {
+        // The needle straddles two push() calls.
+        let buf = OutputRingBuffer::new();
+        push_str(&buf, "this is a NEE");
+        push_str(&buf, "DLE that crosses\n");
+        let hits = buf.search("NEEDLE", false, 100);
+        assert_eq!(hits.len(), 1);
     }
 }
