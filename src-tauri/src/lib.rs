@@ -1340,7 +1340,15 @@ pub fn run() {
             // purpose: the app cannot meaningfully run without a
             // daemon, so we'd rather fail fast and visibly than
             // come up half-configured.
-            let daemon = futures::executor::block_on(async {
+            //
+            // `tauri::async_runtime::block_on` runs the future on
+            // Tauri's own tokio runtime (the same one that
+            // services IPC). `futures::executor::block_on` would
+            // build a fresh runtime with no reactor, and any
+            // `tokio::time::sleep` / `tokio::spawn` inside
+            // `spawn_or_connect` would panic with "there is no
+            // reactor running".
+            let daemon = tauri::async_runtime::block_on(async {
                 daemon_client::spawn_or_connect().await
             })
             .map_err(|e| -> Box<dyn std::error::Error> {
