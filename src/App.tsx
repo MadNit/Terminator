@@ -335,12 +335,12 @@ export default function App() {
   };
 
   /** Broadcast keystroke data to all active live terminal sessions */
-  const handleBroadcastInput = (originTabKey: number, data: string) => {
+  const handleBroadcastInput = (originTabKey: number, data: string, directSessionId?: string | null) => {
     if (!broadcast) {
       // Direct send to this pane only
-      const tab = tabs.find((t) => t.key === originTabKey);
-      if (tab?.sessionId) {
-        void writeSession(tab.sessionId, data);
+      const targetId = directSessionId || tabs.find((t) => t.key === originTabKey)?.sessionId;
+      if (targetId) {
+        void writeSession(targetId, data);
       }
       return;
     }
@@ -740,7 +740,7 @@ export default function App() {
                         jumpPassword={t.jumpPassword}
                         reattachId={t.reattachId}
                         active={t.key === active}
-                        onInputData={(data) => handleBroadcastInput(t.key, data)}
+                        onInputData={(data, sid) => handleBroadcastInput(t.key, data, sid)}
                         onReady={(id) =>
                           setTabs((xs) =>
                             xs.map((x) =>
@@ -838,7 +838,7 @@ export default function App() {
                                 jumpPassword={t.jumpPassword}
                                 reattachId={t.reattachId}
                                 active={(focusedPaneKey ?? active) === t.key}
-                                onInputData={(data) => handleBroadcastInput(t.key, data)}
+                                onInputData={(data, sid) => handleBroadcastInput(t.key, data, sid)}
                                 onReady={(id) =>
                                   setTabs((xs) =>
                                     xs.map((x) =>

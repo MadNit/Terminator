@@ -49,7 +49,7 @@ interface Props {
   reattachId?: string;
   active: boolean;
   /** Function called when data is typed in this pane; useful for broadcast input */
-  onInputData?: (data: string) => void;
+  onInputData?: (data: string, sessionId?: string | null) => void;
   onReady: (id: string) => void;
   onExit: () => void;
   /** Re-run this pane against the same target. */
@@ -634,7 +634,7 @@ export function TerminalPane({
 
       if (idRef.current) {
         if (cb.current.onInputData) {
-          cb.current.onInputData(data);
+          cb.current.onInputData(data, idRef.current);
         } else {
           void writeSession(idRef.current, data);
         }

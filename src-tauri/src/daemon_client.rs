@@ -98,6 +98,9 @@ impl DaemonClient {
     }
 
     pub async fn write(&self, id: Uuid, data: Bytes) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
         let url = format!("{}/sessions/{}/input", self.base_url, id);
         let encoded = {
             use base64::Engine;

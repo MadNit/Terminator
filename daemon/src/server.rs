@@ -249,8 +249,14 @@ async fn write_session(
     Json(req): Json<WriteRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let id = parse_id(&id).map_err(|_| (StatusCode::BAD_REQUEST, "bad uuid".into()))?;
+    if req.data_b64.is_empty() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let bytes = base64_decode(&req.data_b64)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("bad base64: {e}")))?;
+    if bytes.is_empty() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     state
         .manager
         .write(id, bytes)

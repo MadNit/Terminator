@@ -160,6 +160,9 @@ impl DaemonSessionManager {
     }
 
     pub async fn write(&self, id: Uuid, data: Bytes) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
         // `core::SessionManager::write` is sync; wrap in spawn_blocking
         // so we don't hold the runtime on a slow stdin write.
         let core = self.core.clone();

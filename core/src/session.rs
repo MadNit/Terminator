@@ -217,6 +217,9 @@ impl SessionManager {
     }
 
     pub fn write(&self, id: Uuid, data: Bytes) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
         let s = self.get(id)?;
         s.taps.on_data(Direction::Input, &data);
         let t = s.transport.clone();

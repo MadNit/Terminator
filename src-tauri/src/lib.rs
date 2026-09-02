@@ -228,8 +228,14 @@ async fn attach_session(
 
 #[tauri::command]
 async fn write_session(state: State<'_, AppState>, id: String, data: String) -> Result<(), String> {
+    if data.is_empty() {
+        return Ok(());
+    }
     let id = Uuid::parse_str(&id).map_err(e)?;
     let bytes = B64.decode(data.as_bytes()).map_err(e)?;
+    if bytes.is_empty() {
+        return Ok(());
+    }
     state.daemon.write(id, Bytes::from(bytes)).await.map_err(e)
 }
 

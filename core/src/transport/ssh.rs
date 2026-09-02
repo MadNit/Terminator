@@ -357,12 +357,23 @@ impl SshTransport {
         });
 
         // Writer: keystrokes, resizes and shutdown.
+        let mut writer = write_half.make_writer();
         tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
                     Cmd::Data(b) => {
-                        if write_half.data(&b[..]).await.is_err() {
-                            break;
+                        if b.is_empty() {
+                            continue;
+                        }
+                        if let Err(e) = writer.write_all(&b).await {
+                            tracing::error!("SSH writer write_all error: {e:?}");
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                break;
+                            }
+                        }
+                        if let Err(e) = writer.flush().await {
+                            tracing::warn!("SSH writer flush error: {e:?}");
                         }
                     }
                     Cmd::Resize { cols, rows } => {

@@ -177,13 +177,50 @@ export const deleteSecret = (key: string) => invoke("delete_secret", { key });
 export const renameSecret = (from: string, to: string) =>
   invoke<void>("rename_secret", { from, to });
 
-export const writeSession = (id: string, data: string) =>
-  invoke("write_session", { id, data: encodeB64(data) });
+const writeQueues = new Map<
+  string,
+  { pending: string; inFlight: boolean }
+>();
+
+async function pumpWriteQueue(id: string): Promise<void> {
+  const q = writeQueues.get(id);
+  if (!q || q.inFlight || !q.pending) return;
+  q.inFlight = true;
+  const chunk = q.pending;
+  q.pending = "";
+  try {
+    await invoke("write_session", { id, data: encodeB64(chunk) });
+  } catch (err) {
+    console.warn(`writeSession error for session ${id}:`, err);
+  } finally {
+    q.inFlight = false;
+    if (q.pending) {
+      void pumpWriteQueue(id);
+    }
+  }
+}
+
+export function writeSession(id: string, data: string): Promise<void> {
+  if (!data) return Promise.resolve();
+  let q = writeQueues.get(id);
+  if (!q) {
+    q = { pending: "", inFlight: false };
+    writeQueues.set(id, q);
+  }
+  q.pending += data;
+  if (!q.inFlight) {
+    return pumpWriteQueue(id);
+  }
+  return Promise.resolve();
+}
 
 export const resizeSession = (id: string, cols: number, rows: number) =>
   invoke("resize_session", { id, cols, rows });
 
-export const closeSession = (id: string) => invoke("close_session", { id });
+export const closeSession = (id: string) => {
+  writeQueues.delete(id);
+  return invoke("close_session", { id });
+};
 
 export const sessionLogs = (id: string) =>
   invoke<{ cast: string; plain: string }>("session_logs", { id });
