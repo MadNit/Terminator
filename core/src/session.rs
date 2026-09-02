@@ -216,6 +216,15 @@ impl SessionManager {
         Ok(id)
     }
 
+    pub async fn write_async(&self, id: Uuid, data: Bytes) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let s = self.get(id)?;
+        s.taps.on_data(Direction::Input, &data);
+        s.transport.write(data).await
+    }
+
     pub fn write(&self, id: Uuid, data: Bytes) -> Result<()> {
         if data.is_empty() {
             return Ok(());
@@ -229,6 +238,12 @@ impl SessionManager {
             }
         });
         Ok(())
+    }
+
+    pub async fn resize_async(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {
+        let s = self.get(id)?;
+        s.taps.on_resize(cols, rows);
+        s.transport.resize(cols, rows).await
     }
 
     pub fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {

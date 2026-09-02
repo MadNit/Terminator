@@ -97,7 +97,7 @@ export function TerminalPane({
   // real buffer (e.g. mid-paste, mid-Tab-completion) the suggestion
   // simply looks wrong for one keystroke -- it self-corrects on the next
   // printable key the user types.
-  const autosuggestEnabled = useRef(true);
+  const autosuggestEnabled = useRef(false);
   const commandHistory = useRef<string[]>([]);
   const autosuggestInput = useRef<string>("");
   const autosuggestGhost = useRef<string | null>(null);
@@ -542,7 +542,7 @@ export function TerminalPane({
     // the ghost -- that way the next printable char overwrites the first
     // ghost char (which we then re-render).
     const renderAutosuggest = () => {
-      if (!autosuggestEnabled.current) return;
+      if (!autosuggestEnabled.current || term.buffer.active.type !== "normal") return;
       // Clear the previous ghost, if any. The cursor is sitting at the
       // end of the typed text; the ghost is to its right.
       const old = autosuggestGhost.current;

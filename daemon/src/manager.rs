@@ -163,19 +163,11 @@ impl DaemonSessionManager {
         if data.is_empty() {
             return Ok(());
         }
-        // `core::SessionManager::write` is sync; wrap in spawn_blocking
-        // so we don't hold the runtime on a slow stdin write.
-        let core = self.core.clone();
-        tokio::task::spawn_blocking(move || core.write(id, data))
-            .await
-            .map_err(|e| anyhow::anyhow!("write task panicked: {e}"))?
+        self.core.write_async(id, data).await
     }
 
     pub async fn resize(&self, id: Uuid, cols: u16, rows: u16) -> Result<()> {
-        let core = self.core.clone();
-        tokio::task::spawn_blocking(move || core.resize(id, cols, rows))
-            .await
-            .map_err(|e| anyhow::anyhow!("resize task panicked: {e}"))?
+        self.core.resize_async(id, cols, rows).await
     }
 
     pub async fn close(&self, id: Uuid) -> Result<()> {

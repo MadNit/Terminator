@@ -358,9 +358,15 @@ impl SshTransport {
                         if b.is_empty() {
                             continue;
                         }
-                        if let Err(_undelivered) = writer_session.data(channel_id, b).await {
-                            tracing::warn!("SSH writer session.data failed, channel closed");
-                            break;
+                        match tokio::time::timeout(Duration::from_secs(5), writer_session.data(channel_id, b)).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_undelivered)) => {
+                                tracing::warn!("SSH writer session.data failed, channel closed");
+                                break;
+                            }
+                            Err(_) => {
+                                tracing::warn!("SSH writer session.data timed out after 5s");
+                            }
                         }
                     }
                     Cmd::Resize { cols, rows } => {
