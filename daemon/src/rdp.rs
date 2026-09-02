@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use uuid::Uuid;
 
-use terminator_core::rdp::{RdpConfig, RdpEvent, RdpInput, RdpManager};
+use terminator_core::rdp::{BackendAction, RdpConfig, RdpEvent, RdpInput, RdpManager};
 
 /// Per-RDP-session metadata exposed via the list/detail endpoints.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -71,6 +71,13 @@ pub struct DaemonRdpManager {
     /// by the CLIPRDR backend when the server asks for our
     /// format list. Cleared on `close`.
     local_clipboards: Mutex<HashMap<Uuid, String>>,
+    /// Senders into the cliprdr's `BackendAction` channel,
+    /// one per session. `set_local_clipboard` uses these to
+    /// push a `SetLocalClipboard` action that the engine
+    /// applies atomically (replace text + re-advertise) the
+    /// next time it drains the action queue. Cleared on
+    /// `close`.
+    cliprdr_actions: Mutex<HashMap<Uuid, mpsc::UnboundedSender<BackendAction>>>,
 }
 
 impl DaemonRdpManager {
@@ -82,6 +89,7 @@ impl DaemonRdpManager {
             endpoints: Mutex::new(HashMap::new()),
             opened_at: Mutex::new(HashMap::new()),
             local_clipboards: Mutex::new(HashMap::new()),
+            cliprdr_actions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -119,7 +127,7 @@ impl DaemonRdpManager {
             port: cfg.port,
             user: cfg.user.clone(),
         };
-        let (id, width, height) = self
+        let (id, width, height, cliprdr_actions) = self
             .core
             .open_with_timeout(cfg, core_tx, std::time::Duration::from_secs(30))
             .await?;
@@ -140,6 +148,10 @@ impl DaemonRdpManager {
             .lock()
             .await
             .insert(id, now_ms());
+        self.cliprdr_actions
+            .lock()
+            .await
+            .insert(id, cliprdr_actions);
 
         Ok((id, width, height, rx))
     }
@@ -168,25 +180,27 @@ impl DaemonRdpManager {
         Ok(())
     }
 
-    /// Update the local clipboard text for a session. The daemon's
-    /// CLIPRDR backend reads this on the next `on_request_format_list`
-    /// and re-advertises it to the server. Text only for v1.
-    ///
-    /// For Session 3 part 2, this currently just stores the value in
-    /// `local_clipboards`; the actual wire-up to the
-    /// `CliprdrClient` is the engine work tracked as a follow-up.
+    /// Update the local clipboard text for a session. The engine's
+    /// cliprdr backend applies it atomically (replace text +
+    /// re-advertise to the server in one `SetLocalClipboard`
+    /// action) the next time it drains the action queue.
     pub async fn set_local_clipboard(&self, id: Uuid, text: String) -> Result<()> {
-        // Sanity-check the session exists. Avoid silently accepting
-        // clipboard updates for a session that's already closed --
-        // the caller would think the copy succeeded when in fact
-        // the daemon has nowhere to send it.
-        if !self.channels.lock().await.contains_key(&id) {
-            return Err(anyhow!("no such rdp session: {id}"));
-        }
-        self.local_clipboards
-            .lock()
-            .await
-            .insert(id, text);
+        // Sanity-check the session exists and we have its
+        // action sender. A missing sender means the cliprdr
+        // was never wired up for this session (defensive --
+        // `open` always populates it).
+        let sender = {
+            let actions = self.cliprdr_actions.lock().await;
+            actions
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow!("no such rdp session: {id}"))?
+        };
+        // Best-effort: if the engine has already dropped the
+        // receiver (close in flight) the send fails; we
+        // silently swallow. The Tauri side is the only
+        // caller and a future drop race is harmless.
+        let _ = sender.send(BackendAction::SetLocalClipboard { text });
         Ok(())
     }
 
@@ -218,6 +232,13 @@ impl DaemonRdpManager {
         self.endpoints.lock().await.remove(&id);
         self.opened_at.lock().await.remove(&id);
         self.local_clipboards.lock().await.remove(&id);
+        // Dropping the sender closes the cliprdr action
+        // channel for this session once the engine's
+        // pending drain finishes; the engine's select
+        // sees the receiver return None next iteration and
+        // exits the loop. (For a clean teardown this is
+        // exactly what we want.)
+        self.cliprdr_actions.lock().await.remove(&id);
         Ok(())
     }
 

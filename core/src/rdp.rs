@@ -52,10 +52,18 @@ use ironrdp::connector::{
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::cliprdr::backend::CliprdrBackend;
+use ironrdp::cliprdr::pdu::{
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest,
+    FileContentsResponse, FormatDataResponse, LockDataId,
+};
+use ironrdp::cliprdr::CliprdrClient;
+use ironrdp::core::{AsAny, IntoOwned};
 use ironrdp::input::{Database, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp::pdu::Action;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use ironrdp::svc::SvcMessage;
 use ironrdp_tokio::{split_tokio_framed, TokioFramed};
 
 /// What to connect to.
@@ -188,7 +196,7 @@ impl RdpManager {
         &self,
         cfg: RdpConfig,
         events: mpsc::Sender<RdpEvent>,
-    ) -> Result<(Uuid, u16, u16)> {
+    ) -> Result<(Uuid, u16, u16, mpsc::UnboundedSender<BackendAction>)> {
         self.open_with_timeout(cfg, events, CONNECT_TIMEOUT).await
     }
 
@@ -201,14 +209,15 @@ impl RdpManager {
         cfg: RdpConfig,
         events: mpsc::Sender<RdpEvent>,
         timeout: Duration,
-    ) -> Result<(Uuid, u16, u16)> {
-        let (session, width, height) = connect(cfg, events, timeout).await?;
+    ) -> Result<(Uuid, u16, u16, mpsc::UnboundedSender<BackendAction>)> {
+        let (session, width, height, cliprdr_actions) =
+            connect(cfg, events, timeout).await?;
         let id = Uuid::new_v4();
         self.inner
             .lock()
             .map_err(|_| anyhow!("rdp session map poisoned"))?
             .insert(id, Arc::new(session));
-        Ok((id, width, height))
+        Ok((id, width, height, cliprdr_actions))
     }
 
     pub fn input(&self, id: Uuid, ops: Vec<RdpInput>) -> Result<()> {
@@ -253,6 +262,328 @@ impl ironrdp_tokio::NetworkClient for NoNetworkClient {
         )))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Clipboard (CLIPRDR static virtual channel, MS-RDPECLIP)
+// ---------------------------------------------------------------------------
+//
+// The CliprdrBackend trait is synchronous but the work it does
+// is async (read/write local clipboard, call back into the
+// `Cliprdr` state machine). We bridge the two halves through a
+// `BackendAction` channel:
+//
+//   - The trait methods are sync; they push `BackendAction`s to
+//     a channel and return immediately.
+//   - The engine loop reads the channel, calls the relevant
+//     `Cliprdr` method (`initiate_copy`, `initiate_paste`,
+//     `submit_format_data`), takes the resulting `SvcMessage`s,
+//     encodes them via `stage.process_svc_processor_messages`,
+//     and writes the bytes to the socket.
+//
+// Text only for v1; the wire format leaves room to add a
+// `format` discriminator later if we support HTML, images, or
+// file copies.
+
+/// Actions the CLI backend wants the engine loop to perform on
+/// the `CliprdrClient` state machine. Drained between
+/// processing incoming PDUs and writing the next outgoing
+/// frame.
+#[derive(Debug)]
+pub enum BackendAction {
+    /// Re-advertise the local clipboard to the server. The
+    /// engine calls `cliprdr.initiate_copy(&[CF_UNICODETEXT])`
+    /// (plus any future formats) and writes the resulting
+    /// `FormatList` PDU.
+    InitiateCopy,
+    /// Replace the local clipboard text and re-advertise
+    /// to the server. Used by the daemon's
+    /// `set_local_clipboard` (which the Tauri side hits via
+    /// `POST /rdp/{id}/clipboard`). The two steps are
+    /// bundled so a "set new text" can't race with a
+    /// concurrent `initiate_copy` from the server's
+    /// `on_request_format_list` and advertise the wrong
+    /// value.
+    SetLocalClipboard {
+        text: String,
+    },
+    /// Ask the server for the data of a specific format it
+    /// just advertised. The engine calls
+    /// `cliprdr.initiate_paste(format_id)`.
+    InitiatePaste {
+        format_id: ClipboardFormatId,
+    },
+    /// The server asked for the data of a specific format;
+    /// respond with the current local text. The engine calls
+    /// `cliprdr.submit_format_data(response)`.
+    SubmitFormatData {
+        format_id: ClipboardFormatId,
+    },
+}
+
+/// The OS-specific half of the CLIPRDR channel: implements the
+/// `CliprdrBackend` trait and bridges to the engine loop via
+/// `BackendAction`. The local clipboard text lives with the
+/// engine, not here -- the backend only forwards requests and
+/// decodes responses.
+struct TerminatorCliprdrBackend {
+    /// Channel the backend trait methods push actions onto
+    /// for the engine loop to process on the cliprdr.
+    actions: mpsc::UnboundedSender<BackendAction>,
+    /// `RdpEvent::RemoteClipboard { text }` is sent down this
+    /// channel when the server's clipboard data arrives. The
+    /// Tauri side writes it to the OS clipboard.
+    events: mpsc::Sender<RdpEvent>,
+}
+
+impl std::fmt::Debug for TerminatorCliprdrBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TerminatorCliprdrBackend").finish()
+    }
+}
+
+impl AsAny for TerminatorCliprdrBackend {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+impl TerminatorCliprdrBackend {
+    fn new(
+        actions: mpsc::UnboundedSender<BackendAction>,
+        events: mpsc::Sender<RdpEvent>,
+    ) -> Self {
+        Self { actions, events }
+    }
+}
+
+impl CliprdrBackend for TerminatorCliprdrBackend {
+    fn temporary_directory(&self) -> &str {
+        // File transfers (CF_HDROP) are not supported in v1;
+        // the backend trait requires this stub. Return an
+        // empty path so any accidental file-list traffic fails
+        // fast rather than silently writing to a real
+        // directory.
+        ""
+    }
+
+    fn client_capabilities(
+        &self,
+    ) -> ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags {
+        // USE_LONG_FORMAT_NAMES is the only one we care about
+        // for text. No file / no lock capabilities for v1.
+        ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
+    }
+
+    fn on_ready(&mut self) {
+        // Nothing extra to do. The server will send a
+        // FormatList for its own clipboard shortly; the
+        // initial `initiate_copy` happens from
+        // `on_request_format_list` below, which is the
+        // right hook per [MS-RDPECLIP] 1.3.2.1.
+    }
+
+    fn on_request_format_list(&mut self) {
+        // Server is asking what formats we can provide. Queue
+        // an InitiateCopy; the engine will pull the current
+        // local text and advertise CF_UNICODETEXT.
+        let _ = self.actions.send(BackendAction::InitiateCopy);
+    }
+
+    fn on_remote_copy(
+        &mut self,
+        available_formats: &[ClipboardFormat],
+    ) {
+        // Server has new clipboard data. Pick the first
+        // text format we understand and queue a paste.
+        // Order: CF_UNICODETEXT (13) > CF_TEXT (1) > anything
+        // text-shaped; for v1 we only support the unicode
+        // variant.
+        let unicode = ClipboardFormatId::new(13);
+        for f in available_formats {
+            if f.id == unicode {
+                let _ = self
+                    .actions
+                    .send(BackendAction::InitiatePaste { format_id: unicode });
+                return;
+            }
+        }
+    }
+
+    fn on_format_data_request(
+        &mut self,
+        request: ironrdp::cliprdr::pdu::FormatDataRequest,
+    ) {
+        // Server wants the local text in a specific format.
+        // Queue the response; the engine will read the local
+        // text and call `cliprdr.submit_format_data`.
+        let _ = self
+            .actions
+            .send(BackendAction::SubmitFormatData {
+                format_id: request.format,
+            });
+    }
+
+    fn on_format_data_response(
+        &mut self,
+        response: ironrdp::cliprdr::pdu::FormatDataResponse<'_>,
+    ) {
+        // Server sent us the data for a paste we requested.
+        // Decode the text and emit it to the Tauri side. Text
+        // is UTF-16LE for CF_UNICODETEXT; the wire format
+        // is little-endian u16 code units.
+        if response.is_error() {
+            // Server couldn't satisfy the paste. Nothing to
+            // do; the local clipboard is unchanged.
+            return;
+        }
+        // We only requested CF_UNICODETEXT, so any non-empty
+        // response is treated as UTF-16LE text. (A more
+        // complete impl would inspect the format list and
+        // pick a decoder; for v1 the cliprdr's
+        // `initiate_paste` is only ever called for
+        // CF_UNICODETEXT.)
+        let text = decode_utf16le_text(response.data());
+        // Send to Tauri side. Best-effort: if the consumer
+        // is gone we just drop the event.
+        let _ = self.events.try_send(RdpEvent::RemoteClipboard { text });
+    }
+
+    // -- The remaining callbacks are not exercised in v1 (we
+    // only support text, no file transfer, no lock
+    // negotiation). Provide empty defaults so the trait is
+    // satisfied. `on_process_negotiated_capabilities` is not
+    // optional, so it has to be a no-op body here.
+
+    fn on_process_negotiated_capabilities(
+        &mut self,
+        _capabilities: ClipboardGeneralCapabilityFlags,
+    ) {
+        // No-op: we don't negotiate any capabilities beyond
+        // USE_LONG_FORMAT_NAMES, and the cliprdr handles the
+        // intersect internally.
+    }
+
+    fn on_file_contents_request(
+        &mut self,
+        _request: FileContentsRequest,
+    ) {
+        // File transfer is not supported in v1. The cliprdr
+        // wouldn't have sent a FormatList with FileGroupDescriptorW
+        // because we never advertise it, so this callback
+        // should never fire.
+    }
+
+    fn on_file_contents_response(
+        &mut self,
+        _response: FileContentsResponse<'_>,
+    ) {
+        // Same as above; not reachable in v1.
+    }
+
+    fn on_lock(&mut self, _data_id: LockDataId) {
+        // No-op: lock negotiation is not enabled in v1.
+    }
+
+    fn on_unlock(&mut self, _data_id: LockDataId) {
+        // No-op.
+    }
+}
+
+/// Decode a CF_UNICODETEXT payload (UTF-16LE) into a `String`.
+/// Trims a trailing NUL terminator if present (Windows
+/// convention for clipboard text).
+fn decode_utf16le_text(bytes: &[u8]) -> String {
+    // Round to whole code units; trailing odd byte (if any) is
+    // dropped.
+    let units = bytes.len() / 2;
+    let codes: Vec<u16> = (0..units)
+        .map(|i| u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]))
+        .collect();
+    let mut text = String::from_utf16_lossy(&codes);
+    while text.ends_with('\0') {
+        text.pop();
+    }
+    text
+}
+
+/// Build the format list we advertise when the server asks for
+/// our local clipboard. v1: just CF_UNICODETEXT.
+fn local_text_formats() -> Vec<ClipboardFormat> {
+    vec![ClipboardFormat {
+        id: ClipboardFormatId::new(13),
+        name: None,
+    }]
+}
+
+/// Helper for the engine loop: drain pending backend actions,
+/// apply each one to the `CliprdrClient`, and return the
+/// resulting outgoing SVC messages (as a flat `Vec<SvcMessage>`;
+/// the caller wraps in `SvcProcessorMessages` for
+/// `process_svc_processor_messages`).
+fn drain_backend_actions(
+    actions: &mut mpsc::UnboundedReceiver<BackendAction>,
+    cliprdr: &mut CliprdrClient,
+    local_text: &Arc<Mutex<Option<String>>>,
+) -> Vec<SvcMessage> {
+    let mut out: Vec<SvcMessage> = Vec::new();
+    while let Ok(action) = actions.try_recv() {
+        match action {
+            BackendAction::InitiateCopy => {
+                let formats = local_text_formats();
+                match cliprdr.initiate_copy(&formats) {
+                    Ok(msgs) => out.extend(Vec::from(msgs)),
+                    Err(e) => tracing::debug!("cliprdr.initiate_copy: {e}"),
+                }
+            }
+            BackendAction::SetLocalClipboard { text } => {
+                // Replace the local text and re-advertise in
+                // one atomic step. Doing them as two separate
+                // actions would race with a concurrent
+                // `on_request_format_list` -> `InitiateCopy`
+                // and could advertise a stale value.
+                if let Ok(mut g) = local_text.lock() {
+                    *g = Some(text);
+                }
+                let formats = local_text_formats();
+                match cliprdr.initiate_copy(&formats) {
+                    Ok(msgs) => out.extend(Vec::from(msgs)),
+                    Err(e) => tracing::debug!("cliprdr.initiate_copy: {e}"),
+                }
+            }
+            BackendAction::InitiatePaste { format_id } => match cliprdr.initiate_paste(format_id) {
+                Ok(msgs) => out.extend(Vec::from(msgs)),
+                Err(e) => tracing::debug!("cliprdr.initiate_paste: {e}"),
+            },
+            BackendAction::SubmitFormatData { format_id } => {
+                // Only CF_UNICODETEXT for v1; anything else is
+                // a no-op (the server shouldn't have asked).
+                if format_id != ClipboardFormatId::new(13) {
+                    continue;
+                }
+                let text = local_text
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .unwrap_or_default();
+                let response = FormatDataResponse::new_unicode_string(&text);
+                match cliprdr.submit_format_data(response.into_owned()) {
+                    Ok(msgs) => out.extend(Vec::from(msgs)),
+                    Err(e) => tracing::debug!("cliprdr.submit_format_data: {e}"),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Encode a Rust `String` as UTF-16LE for CF_UNICODETEXT.
+/// The trailing NUL is added by the caller (drain_backend_actions).
+// (intentionally removed: we use FormatDataResponse::new_unicode_string
+//  which handles the trailing NUL and the unicode-string serialization
+//  per MS-RDPECLIP 2.2.5.1.)
 
 fn build_config(cfg: &RdpConfig) -> connector::Config {
     connector::Config {
@@ -326,7 +657,7 @@ async fn connect(
     cfg: RdpConfig,
     events: mpsc::Sender<RdpEvent>,
     deadline: Duration,
-) -> Result<(RdpSession, u16, u16)> {
+) -> Result<(RdpSession, u16, u16, mpsc::UnboundedSender<BackendAction>)> {
     let addr = format!("{}:{}", cfg.host, cfg.port);
     tokio::time::timeout(deadline, connect_inner(cfg, events))
         .await
@@ -342,7 +673,7 @@ async fn connect(
 async fn connect_inner(
     cfg: RdpConfig,
     events: mpsc::Sender<RdpEvent>,
-) -> Result<(RdpSession, u16, u16)> {
+) -> Result<(RdpSession, u16, u16, mpsc::UnboundedSender<BackendAction>)> {
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let stream = TcpStream::connect(&addr)
         .await
@@ -354,6 +685,26 @@ async fn connect_inner(
     let local: SocketAddr = stream.local_addr().context("local address")?;
     let mut framed = TokioFramed::new(stream);
 
+    // CLIPRDR (text-only clipboard) shares its state with
+    // the daemon's `set_local_clipboard` and with the
+    // engine loop. The `BackendAction` channel is the
+    // bridge: the backend's sync trait callbacks push
+    // actions on its end, the daemon's
+    // `set_local_clipboard` pushes a `SetLocalClipboard`
+    // action on its end (via the sender we return), and
+    // the engine drains the receiver and calls the right
+    // `initiate_*` / `submit_*` method.
+    let local_text: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    // `actions_tx` is cloned three ways: one to the
+    // backend (so its trait callbacks can push), one
+    // returned to the caller as the "external" sender
+    // (the daemon uses it from `set_local_clipboard`),
+    // and the original is dropped. `actions_rx` is moved
+    // into the engine task.
+    let (actions_tx, actions_rx) = mpsc::unbounded_channel::<BackendAction>();
+    let backend_tx = actions_tx.clone();
+    let external_tx = actions_tx;
+
     let mut connector = ClientConnector::new(build_config(&cfg), local)
         // DisplayControl is what makes live resizing possible; without this
         // channel the desktop is stuck at its handshake size for the whole
@@ -361,7 +712,11 @@ async fn connect_inner(
         .with_static_channel(
             DrdynvcClient::new()
                 .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        );
+        )
+        // Clipboard (CLIPRDR). Text only for v1.
+        .with_static_channel(CliprdrClient::new(Box::new(
+            TerminatorCliprdrBackend::new(backend_tx, events.clone()),
+        )));
 
     let upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector)
         .await
@@ -412,10 +767,18 @@ async fn connect_inner(
     });
 
     tokio::spawn(engine(
-        reader, result, out_tx, cmd_rx, events, width, height,
+        reader,
+        result,
+        out_tx,
+        cmd_rx,
+        events,
+        width,
+        height,
+        local_text,
+        actions_rx,
     ));
 
-    Ok((RdpSession { cmd: cmd_tx }, width, height))
+    Ok((RdpSession { cmd: cmd_tx }, width, height, external_tx))
 }
 
 /// Turn IronRDP's connector errors into something a user can act on.
@@ -447,13 +810,65 @@ async fn engine(
     events: mpsc::Sender<RdpEvent>,
     width: u16,
     height: u16,
+    // Latest local clipboard text. Shared with the
+    // `TerminatorCliprdrBackend` (so its `on_format_data_request`
+    // callback can read the current text) and with the
+    // daemon's `set_local_clipboard` (so the Tauri side can
+    // push updates).
+    local_text: Arc<Mutex<Option<String>>>,
+    // Backend actions the cliprdr trait methods pushed
+    // since the last loop iteration. Drained every iteration
+    // and applied to the cliprdr state machine, with the
+    // resulting outgoing PDUs written to the socket.
+    mut actions_rx: mpsc::UnboundedReceiver<BackendAction>,
 ) {
     let mut image = DecodedImage::new(PixelFormat::RgbA32, width, height);
     let mut stage = ActiveStage::new(result);
     let mut keyboard = Database::new();
     let mut damage: Option<Rect> = None;
 
+    // Drive the cliprdr's lock-cleanup state machine on a
+    // timer. The 5s interval matches the ironrdp-cliprdr
+    // README's recommendation; we don't do file transfers so
+    // there are no file-contents timeouts to worry about.
+    let mut cliprdr_tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    cliprdr_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     let _ = events.send(RdpEvent::Resized { width, height }).await;
+
+    // Helper: drain any pending backend actions and pump
+    // their results (and the periodic drive_timeouts) to the
+    // socket. Pulled out so both the regular loop and the
+    // close path can call it.
+    let pump_cliprdr = |stage: &mut ActiveStage,
+                        actions_rx: &mut mpsc::UnboundedReceiver<BackendAction>,
+                        local_text: &Arc<Mutex<Option<String>>>,
+                        out: &mpsc::Sender<Vec<u8>>| {
+        let cliprdr = match stage.get_svc_processor_mut::<CliprdrClient>() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+        // 1. Drain backend actions -> call methods -> collect messages.
+        let mut pending = drain_backend_actions(actions_rx, cliprdr, local_text);
+        // 2. Drive timeouts (lock cleanup) -> more messages.
+        if let Ok(msgs) = cliprdr.drive_timeouts() {
+            pending.extend(Vec::from(msgs));
+        }
+        if pending.is_empty() {
+            return Ok(());
+        }
+        // 3. Encode via the stage's SVC processor and write to socket.
+        let messages = ironrdp::svc::SvcProcessorMessages::<CliprdrClient>::new(pending);
+        match stage.process_svc_processor_messages::<CliprdrClient>(messages) {
+            Ok(encoded) => {
+                if !encoded.is_empty() {
+                    let _ = out.try_send(encoded);
+                }
+                Ok(())
+            }
+            Err(e) => Err(anyhow!("cliprdr encode: {e}")),
+        }
+    };
 
     let reason = loop {
         // Flush pending damage whenever the UI has capacity. Coalescing here
@@ -465,6 +880,13 @@ async fn engine(
                     let _ = events.try_send(ev);
                 }
             }
+        }
+
+        // Drain any pending cliprdr actions before blocking on the
+        // select, so a fast `set_local_clipboard` doesn't have to
+        // wait for a frame to arrive.
+        if let Err(e) = pump_cliprdr(&mut stage, &mut actions_rx, &local_text, &out) {
+            break format!("cliprdr: {e}");
         }
 
         let outputs = tokio::select! {
@@ -502,7 +924,26 @@ async fn engine(
                 },
                 Err(e) => break e,
             },
+
+            // Periodic cliprdr timer. Drives lock cleanup
+            // and any time-bounded state in the cliprdr
+            // state machine. Cheap when nothing to do.
+            _ = cliprdr_tick.tick() => {
+                if let Err(e) = pump_cliprdr(&mut stage, &mut actions_rx, &local_text, &out) {
+                    break format!("cliprdr: {e}");
+                }
+                continue;
+            }
         };
+
+        // After handling a frame, the cliprdr's `process` may
+        // have queued backend actions (e.g. on remote copy ->
+        // backend's on_remote_copy -> BackendAction::InitiatePaste).
+        // Drain them now so the new state is sent before we
+        // block on the next select.
+        if let Err(e) = pump_cliprdr(&mut stage, &mut actions_rx, &local_text, &out) {
+            break format!("cliprdr: {e}");
+        }
 
         match handle_outputs(
             outputs,
