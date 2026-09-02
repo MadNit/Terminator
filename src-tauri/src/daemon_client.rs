@@ -90,11 +90,21 @@ impl DaemonClient {
             "jump_key_passphrase": creds.jump_key_passphrase,
         });
         let body = serde_json::to_string(&body).context("serialize open body")?;
+        // SSH `open` blocks until the daemon finishes the TCP
+        // connect + handshake + auth + PTY-open round trip
+        // (worst case ~50s on a slow link: the daemon's own
+        // CONNECT_TIMEOUT is 20s and AUTH_TIMEOUT is 30s). The
+        // default reqwest client below has a 5s timeout, which
+        // would make every SSH connect abort before the daemon
+        // even responded -- the front-end then shows
+        // "[connection failed]". Override per call so the other
+        // endpoints keep the snappy 5s limit.
         let resp = self
             .http
             .post(format!("{}/sessions", self.base_url))
             .header("content-type", "application/json")
             .body(body)
+            .timeout(Duration::from_secs(90))
             .send()
             .await
             .context("POST /sessions")?;
@@ -112,9 +122,15 @@ impl DaemonClient {
         // Open the SSE stream separately. The Tauri command will
         // drain it and forward events into the Tauri Channel.
         let sse_url = format!("{}/sessions/{}/output", self.base_url, id);
+        // The SSE stream is long-lived; the reqwest client's
+        // 5s default would cut it off the moment the first
+        // silence arrived. Drop the per-request timeout so
+        // the connection stays up until the daemon closes
+        // it on session exit.
         let sse_resp = self
             .http
             .get(&sse_url)
+            .timeout(Duration::from_secs(24 * 60 * 60))
             .send()
             .await
             .with_context(|| format!("GET {sse_url}"))?;
@@ -211,6 +227,7 @@ impl DaemonClient {
         let sse_resp = self
             .http
             .get(&sse_url)
+            .timeout(Duration::from_secs(24 * 60 * 60))
             .send()
             .await
             .with_context(|| format!("GET {sse_url}"))?;
@@ -839,6 +856,25 @@ fn port_file() -> Result<PathBuf> {
     Ok(data_dir()?.join("daemon.port"))
 }
 
+/// Path the daemon's stderr is teed to so an early-exit / panic
+/// during startup is visible to whoever launched it. Mirrors
+/// `daemon::resolve_data_dir` on the daemon side, but never
+/// fails -- if we cannot resolve the per-user dir (e.g. on a
+/// server with no `LOCALAPPDATA`), we fall back to the system
+/// temp dir.
+fn daemon_stderr_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("LOCALAPPDATA") {
+        return PathBuf::from(p)
+            .join("terminator")
+            .join("logs")
+            .join("daemon.stderr.log");
+    }
+    if let Some(p) = std::env::var_os("TEMP") {
+        return PathBuf::from(p).join("terminator-daemon.stderr.log");
+    }
+    PathBuf::from("terminator-daemon.stderr.log")
+}
+
 /// Probe whether a daemon is already running on the port recorded in
 /// `daemon.port`. Returns `Some(client)` on success, `None` if no
 /// port file or the daemon is dead.
@@ -875,13 +911,36 @@ pub async fn spawn_daemon() -> Result<DaemonClient> {
     let exe = find_daemon_exe().context("locate terminator-daemon binary")?;
     info!(?exe, "spawning terminator-daemon");
     let mut cmd = Command::new(&exe);
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // Detach the daemon from this process. On Windows,
-    // `CREATE_NO_WINDOW` is implied by detaching stdio; the
-    // daemon doesn't open a console. On Unix, the child becomes a
-    // new session leader so it survives the parent's exit.
+    cmd.stdin(Stdio::null()).stdout(Stdio::null());
+    // Capture stderr to a per-user log file. The previous version
+    // piped stderr to /dev/null, which meant a panic during
+    // startup (or any tracing output) was invisible: the spawn
+    // would succeed, the port file would never appear, and the
+    // 10s poll below would time out with no diagnostic. Teeing
+    // stderr to a known location lets us read it from outside
+    // the daemon when this happens.
+    let stderr_path = daemon_stderr_path();
+    if let Some(parent) = stderr_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&stderr_path)
+    {
+        Ok(file) => {
+            info!(?stderr_path, "daemon stderr -> file");
+            cmd.stderr(Stdio::from(file));
+        }
+        Err(e) => {
+            warn!(?stderr_path, ?e, "could not open daemon stderr log; falling back to /dev/null");
+            cmd.stderr(Stdio::null());
+        }
+    }
+    // Detach the daemon from this process. On Unix, the child
+    // becomes a new session leader so it survives the parent's
+    // exit. On Windows, stdio is fully detached; the daemon has
+    // no controlling console.
     #[cfg(unix)]
     {
         cmd.process_group(0);
