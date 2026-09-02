@@ -15,7 +15,7 @@ use anyhow::{anyhow, bail, Result};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-const SERVICE: &str = "com.terminator.app";
+const SERVICE: &str = "dev.terminator.desktop";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Backend {

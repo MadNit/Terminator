@@ -21,7 +21,7 @@ use terminator_core::{
 use uuid::Uuid;
 
 mod daemon_client;
-use daemon_client::{DaemonClient, OutputEvent as DaemonOutputEvent};
+use daemon_client::{OutputEvent as DaemonOutputEvent, ResilientDaemon};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 /// Events pushed to the webview for a single session.
@@ -42,7 +42,7 @@ struct AppState {
     /// the Tauri process is a thin proxy. Closing the Tauri app
     /// does NOT terminate the daemon, which is the entire point
     /// of having a daemon.
-    daemon: Arc<DaemonClient>,
+    daemon: Arc<ResilientDaemon>,
     store: Store,
     /// Arc so blocking keychain work can be moved onto a blocking thread.
     secrets: Arc<Secrets>,
@@ -1288,7 +1288,7 @@ fn disable_press_and_hold() {
     unsafe {
         // 1. Set via CoreFoundation preferences for both bundle ID and current app domain
         let key_c = std::ffi::CString::new("ApplePressAndHoldEnabled").unwrap();
-        let app_c = std::ffi::CString::new("com.terminator.app").unwrap();
+        let app_c = std::ffi::CString::new("dev.terminator.desktop").unwrap();
         let key =
             CFStringCreateWithCString(std::ptr::null(), key_c.as_ptr(), K_CF_STRING_ENCODING_UTF8);
         let app =
@@ -1388,7 +1388,7 @@ pub fn run() {
             tracing::info!("daemon client ready at {}", "<redacted>"); // URL printed in debug only
 
             let state = AppState {
-                daemon: Arc::new(daemon),
+                daemon: Arc::new(ResilientDaemon::new(Arc::new(daemon))),
                 store,
                 secrets: Arc::new(Secrets::new(data_dir.join("secrets"))),
                 tunnels: TunnelManager::new(known_hosts.clone()),
